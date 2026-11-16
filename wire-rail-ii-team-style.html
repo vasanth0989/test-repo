@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wire Rail II flow</title>
+<style>
+  :root {
+    --green: #d5e8d4; --green-line: #82b366; --green-dark: #3d6b2f;
+    --yellow: #fff2cc; --yellow-line: #d6b656; --blue: #dae8fc; --blue-line: #6c8ebf;
+    --ink: #1c1f1c; --muted: #5b635b; --line: #cfd8cf; --page: #f7f9f7; --card: #ffffff;
+    --active: #1a56db; --done: #5c85d6; --fail: #c62828;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font-family: Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.45; }
+  .wrap { max-width: 1560px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  button { font: inherit; cursor: pointer; border-radius: 4px; }
+  .tab { background: var(--green); border: 1px solid var(--green-line); padding: 7px 14px; color: var(--ink); }
+  .tab[aria-pressed="true"] { background: var(--green-dark); border-color: var(--green-dark); color: #fff; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+  .stage { padding: 6px; overflow-x: auto; }
+  .stage svg { display: block; width: 100%; height: auto; min-width: 900px; }
+  .panel { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; margin-top: 12px; }
+  @media (max-width: 900px) { .panel { grid-template-columns: 1fr; } }
+  .now { padding: 14px 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .ctl { background: var(--yellow); border: 1px solid var(--yellow-line); padding: 6px 12px; color: var(--ink); min-width: 74px; }
+  .ctl.primary { background: var(--blue); border-color: var(--blue-line); font-weight: bold; }
+  .ctl:disabled { opacity: 0.45; cursor: default; }
+  .speed { margin-left: auto; color: var(--muted); font-size: 13px; }
+  .speed select { font: inherit; padding: 4px; }
+  .caption { display: flex; gap: 12px; align-items: flex-start; min-height: 74px; }
+  .badge { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; background: var(--yellow); border: 1px solid var(--yellow-line); display: grid; place-items: center; font-weight: bold; }
+  .badge.blank { visibility: hidden; }
+  .caption p { margin: 0; font-size: 17px; }
+  .count { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .steps { padding: 10px 8px; margin: 0; list-style: none; max-height: 330px; overflow-y: auto; }
+  .steps li { padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 13.5px; border-left: 3px solid transparent; }
+  .steps li:hover { background: #f0f5f0; }
+  .steps li.cur { background: var(--blue); border-left-color: var(--active); }
+  .steps li.past { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 14px; }
+  .tip { position: fixed; z-index: 5; max-width: 320px; background: #1c1f1c; color: #fff; padding: 8px 10px; border-radius: 4px; font-size: 13px; pointer-events: none; opacity: 0; transition: opacity 120ms ease-out; }
+  .tip.on { opacity: 1; }
+  .edge { transition: stroke 160ms ease-out, stroke-width 160ms ease-out; }
+  .edge.done { stroke: var(--done); stroke-width: 1.8; }
+  .edge.active { stroke: var(--active); stroke-width: 3; }
+  .edge.active.fail { stroke: var(--fail); }
+  .hit { fill: transparent; cursor: help; }
+  .glow { fill: none; stroke: var(--active); stroke-width: 2.5; rx: 5; opacity: 0; transition: opacity 180ms ease-out; pointer-events: none; }
+  .glow.on { opacity: 1; }
+  .tint { fill: rgba(198, 40, 40, 0.09); stroke: var(--fail); stroke-dasharray: 6 4; pointer-events: none; }
+  .tintlabel { fill: var(--fail); font-weight: bold; font-size: 13px; pointer-events: none; }
+  #token { fill: var(--active); stroke: #fff; stroke-width: 2; pointer-events: none; }
+  #token.fail { fill: var(--fail); }
+  #cross { fill: var(--fail); font-size: 22px; font-weight: bold; pointer-events: none; }
+  #err { color: var(--fail); font-weight: bold; }
+  @media (prefers-reduced-motion: reduce) { .edge, .glow, .tip { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Wire Rail II: from the PayX call to the PayX callback</h1>
+  <p class="sub">Pick a scenario, then play it or step through it. Hover a component to see what it does.</p>
+  <div class="tabs" id="tabs"></div>
+  <div class="card stage" id="stage"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1640 1160" font-family="Helvetica, Arial, sans-serif">
+<defs><pattern id="g" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M10 0H0V10" fill="none" stroke="#e6e6e6" stroke-width="0.6"/></pattern><marker id="a" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0 0L9 4L0 8L2.2 4Z" fill="#000"/></marker><marker id="adone" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0 0L9 4L0 8L2.2 4Z" fill="#5c85d6"/></marker><marker id="aact" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto"><path d="M0 0L7 3L0 6L1.7 3Z" fill="#1a56db"/></marker><marker id="afail" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto"><path d="M0 0L7 3L0 6L1.7 3Z" fill="#c62828"/></marker><linearGradient id="lam" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#D05C17"/><stop offset="1" stop-color="#F78E04"/></linearGradient></defs>
+<rect width="1640" height="1160" fill="#fff"/><rect width="1640" height="1160" fill="url(#g)"/>
+<rect x="40" y="30" width="1160" height="170" fill="#d5e8d4"/>
+<rect x="65" y="55" width="1110" height="120" fill="#fff" stroke="#000" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="620.0" y="68.0" font-size="12" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">ASVPAYMENTEXCHANGE</text>
+<rect x="110" y="95" width="150" height="50" fill="#d5e8d4" stroke="#82b366"/>
+<text x="185.0" y="120.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">PayX Integration Service</text>
+<rect x="360" y="95" width="80" height="50" fill="#d5e8d4" stroke="#82b366"/>
+<text x="400.0" y="120.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">OFAC</text>
+<rect x="925" y="95" width="150" height="50" fill="#d5e8d4" stroke="#82b366"/>
+<text x="1000.0" y="120.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">PayX Callback API</text>
+<rect x="90" y="222" width="1010" height="58" fill="#dae8fc"/>
+<text x="100.0" y="232.0" font-size="11" text-anchor="start" dominant-baseline="middle" font-weight="bold" font-style="italic" fill="#111">Cat 2</text>
+<rect x="105" y="244" width="980" height="26" rx="6" fill="#fff2cc" stroke="#82b366"/>
+<text x="595.0" y="257.0" font-size="11" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">API Gateway Internal (health-checked routing to us-east-1 or us-west-2)</text>
+<rect x="40" y="320" width="1160" height="610" fill="#d5e8d4"/>
+<rect x="65" y="345" width="1110" height="560" fill="#fff" stroke="#000" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="610.0" y="360.0" font-size="12" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">ASVWIREII (us-east-1)</text>
+<rect x="110" y="570" width="150" height="60" fill="#d5e8d4" stroke="#82b366"/>
+<text x="185.0" y="593.1" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Wire Rail II API</text>
+<text x="185.0" y="606.9" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Java Fargate Service</text>
+<rect x="102.3" y="639.8" width="170.5" height="10.8" fill="#fff"/>
+<text x="187.5" y="645.4" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">validates, converts to pain.001 V11,</text>
+<rect x="121.0" y="651.0" width="133.0" height="10.8" fill="#fff"/>
+<text x="187.5" y="656.6" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">stores, returns 202 Accepted</text>
+<rect x="335.4" y="570.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="335.4" y="585.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="335.4" y="600.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="335.4" y="615.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="400.6" y="558.5" width="48.8" height="12.0" fill="#fff"/>
+<text x="425.0" y="564.8" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">Wire Rail</text>
+<rect x="403.2" y="571.0" width="43.6" height="12.0" fill="#fff"/>
+<text x="425.0" y="577.2" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">DynamoDB</text>
+<polygon points="625.0,440.0 650.0,453.2 650.0,486.8 625.0,500.0 600.0,486.8 600.0,453.2" fill="#D9A741" stroke="#876929" stroke-width="0.8"/>
+<rect x="610.0" y="465.2" width="30.0" height="9.6" fill="#876929"/>
+<text x="625.0" y="431.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Notify queue</text>
+<rect x="820" y="443" width="54" height="54" fill="url(#lam)"/>
+<text x="847.0" y="472.0" font-size="37" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-weight="bold">&#955;</text>
+<text x="847.0" y="506.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Notifier</text>
+<polygon points="721.0,512.0 738.0,520.8 738.0,543.2 721.0,552.0 704.0,543.2 704.0,520.8" fill="#D9A741" stroke="#876929" stroke-width="0.8"/>
+<rect x="710.8" y="528.8" width="20.4" height="6.4" fill="#876929"/>
+<rect x="750.2" y="525.8" width="17.6" height="12.0" fill="#fff"/>
+<text x="759.0" y="532.0" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">DLQ</text>
+<rect x="598" y="573" width="54" height="54" fill="url(#lam)"/>
+<text x="625.0" y="602.0" font-size="37" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-weight="bold">&#955;</text>
+<rect x="657.0" y="608.8" width="111.2" height="12.0" fill="#fff"/>
+<text x="658.0" y="615.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">Relay (stream filter)</text>
+<rect x="657.0" y="625.5" width="122.6" height="9.6" fill="#fff"/>
+<text x="658.0" y="630.5" font-size="8" text-anchor="start" dominant-baseline="middle" fill="#111">Lambda on the DynamoDB stream</text>
+<rect x="598" y="790" width="54" height="54" fill="url(#lam)"/>
+<text x="625.0" y="819.0" font-size="37" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-weight="bold">&#955;</text>
+<rect x="657.0" y="825.8" width="116.4" height="12.0" fill="#fff"/>
+<text x="658.0" y="832.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">Sweeper (every minute)</text>
+<rect x="657.0" y="842.5" width="122.6" height="9.6" fill="#fff"/>
+<text x="658.0" y="847.5" font-size="8" text-anchor="start" dominant-baseline="middle" fill="#111">Lambda, EventBridge Scheduler</text>
+<rect x="792" y="577" width="110" height="46" fill="#d5e8d4" stroke="#82b366"/>
+<text x="847.0" y="593.1" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Control records</text>
+<text x="847.0" y="606.9" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">(fence, breaker)</text>
+<polygon points="625.0,700.0 650.0,713.2 650.0,746.8 625.0,760.0 600.0,746.8 600.0,713.2" fill="#D9A741" stroke="#876929" stroke-width="0.8"/>
+<rect x="610.0" y="725.2" width="30.0" height="9.6" fill="#876929"/>
+<rect x="631.0" y="763.2" width="70.6" height="13.2" fill="#fff"/>
+<text x="632.0" y="770.0" font-size="11" text-anchor="start" dominant-baseline="middle" fill="#111">Submit queue</text>
+<rect x="820" y="703" width="54" height="54" fill="url(#lam)"/>
+<text x="847.0" y="732.0" font-size="37" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-weight="bold">&#955;</text>
+<rect x="879.0" y="701.2" width="53.5" height="13.2" fill="#fff"/>
+<text x="880.0" y="708.0" font-size="11" text-anchor="start" dominant-baseline="middle" fill="#111">Submitter</text>
+<rect x="879.0" y="685.5" width="81.0" height="9.6" fill="#fff"/>
+<text x="880.0" y="690.5" font-size="8" text-anchor="start" dominant-baseline="middle" fill="#111">Lambda, SQS trigger</text>
+<polygon points="721.0,648.0 738.0,656.8 738.0,679.2 721.0,688.0 704.0,679.2 704.0,656.8" fill="#D9A741" stroke="#876929" stroke-width="0.8"/>
+<rect x="710.8" y="664.8" width="20.4" height="6.4" fill="#876929"/>
+<rect x="750.2" y="661.8" width="17.6" height="12.0" fill="#fff"/>
+<text x="759.0" y="668.0" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">DLQ</text>
+<path d="M960 706 h96 v39.36 q24.0 14.399999999999999 -48.0 0 t-48.0 0 z" fill="#fff" stroke="#000"/>
+<text x="1008.0" y="719.9" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">PAIN 001</text>
+<text x="1008.0" y="732.4" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">V11 JSON</text>
+<rect x="1230" y="700" width="220" height="60" fill="#dae8fc"/>
+<text x="1238.0" y="708.0" font-size="11" text-anchor="start" dominant-baseline="middle" font-weight="bold" font-style="italic" fill="#111">Cat 2</text>
+<rect x="1245" y="717" width="190" height="26" rx="6" fill="#fff2cc" stroke="#82b366"/>
+<text x="1340.0" y="730.0" font-size="11" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">API Partner Gateway</text>
+<polygon points="1528.0,703.0 1549.9,713.2 1555.3,736.0 1540.1,754.3 1515.9,754.3 1500.7,736.0 1506.1,713.2" fill="#2875E2"/>
+<circle cx="1528.0" cy="730.0" r="16.8" fill="#fff"/>
+<circle cx="1528.0" cy="730.0" r="7.8" fill="none" stroke="#2875E2" stroke-width="3" stroke-dasharray="3 2"/>
+<text x="1528.0" y="766.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">FIS OPF API</text>
+<polygon points="1318.0,803.0 1339.9,813.2 1345.3,836.0 1330.1,854.3 1305.9,854.3 1290.7,836.0 1296.1,813.2" fill="#2875E2"/>
+<circle cx="1318.0" cy="830.0" r="16.8" fill="#fff"/>
+<circle cx="1318.0" cy="830.0" r="7.8" fill="none" stroke="#2875E2" stroke-width="3" stroke-dasharray="3 2"/>
+<text x="1318.0" y="866.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Turing API (detokenise)</text>
+<rect x="40" y="955" width="1160" height="160" fill="#d5e8d4"/>
+<rect x="65" y="980" width="1110" height="110" fill="#fff" stroke="#000" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="910.0" y="994.0" font-size="12" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">ASVWIREII (us-west-2): same components, shown in short</text>
+<rect x="321.9" y="1010.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="321.9" y="1025.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="321.9" y="1040.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="321.9" y="1055.0" width="43.2" height="14.0" rx="5" fill="#2E73B8" stroke="#1A476F" stroke-width="0.8"/>
+<rect x="218.4" y="1027.5" width="95.6" height="12.0" fill="#fff"/>
+<text x="313.0" y="1033.8" font-size="10" text-anchor="end" dominant-baseline="middle" fill="#111">Wire Rail DynamoDB</text>
+<rect x="275.6" y="1040.0" width="38.4" height="12.0" fill="#fff"/>
+<text x="313.0" y="1046.2" font-size="10" text-anchor="end" dominant-baseline="middle" fill="#111">replica</text>
+<rect x="598" y="1013" width="54" height="54" fill="url(#lam)"/>
+<text x="625.0" y="1042.0" font-size="37" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-weight="bold">&#955;</text>
+<rect x="605.8" y="1069.8" width="38.4" height="12.0" fill="#fff"/>
+<text x="625.0" y="1076.0" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">Sweeper</text>
+<rect x="800" y="1017" width="200" height="46" fill="#d5e8d4" stroke="#82b366"/>
+<text x="900.0" y="1040.0" font-size="11" text-anchor="middle" dominant-baseline="middle" fill="#111">Queues, Submitter, Notifier</text>
+<rect x="302.6" y="101.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="313.0" y="107.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">OFAC</text>
+<rect x="200.9" y="307.4" width="58.2" height="10.8" fill="#fff"/>
+<text x="230.0" y="313.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">POST payment</text>
+<rect x="270.6" y="607.4" width="48.8" height="10.8" fill="#fff"/>
+<text x="295.0" y="613.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">put if new</text>
+<rect x="500.9" y="581.4" width="58.2" height="10.8" fill="#fff"/>
+<text x="530.0" y="587.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">stream event</text>
+<rect x="630.0" y="641.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="631.0" y="647.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="689.0" y="710.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="690.0" y="716.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="435.5" y="860.4" width="147.1" height="10.8" fill="#fff"/>
+<text x="509.0" y="866.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">claim with lease, write outcome</text>
+<rect x="1001.2" y="811.4" width="95.6" height="10.8" fill="#fff"/>
+<text x="1049.0" y="817.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">detokenise in memory</text>
+<rect x="1105.6" y="740.8" width="20.7" height="10.8" fill="#fff"/>
+<text x="1116.0" y="746.4" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">POST</text>
+<rect x="1063.5" y="752.0" width="105.0" height="10.8" fill="#fff"/>
+<text x="1116.0" y="757.6" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">idempotency-key = UETR</text>
+<rect x="630.0" y="549.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="631.0" y="555.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="717.6" y="452.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="728.0" y="458.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="1013.6" y="396.4" width="76.9" height="10.8" fill="#fff"/>
+<text x="1052.0" y="402.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">outcome callback</text>
+<rect x="458.6" y="392.4" width="62.8" height="10.8" fill="#fff"/>
+<text x="490.0" y="398.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">mark notified</text>
+<rect x="419.0" y="631.4" width="95.6" height="10.8" fill="#fff"/>
+<text x="420.0" y="637.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">query due, take over</text>
+<rect x="579.6" y="769.4" width="39.4" height="10.8" fill="#fff"/>
+<text x="618.0" y="775.0" font-size="9" text-anchor="end" dominant-baseline="middle" fill="#111">re-queue</text>
+<rect x="855.0" y="656.4" width="62.8" height="10.8" fill="#fff"/>
+<text x="856.0" y="662.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">reads breaker</text>
+<rect x="349.0" y="937.4" width="114.3" height="10.8" fill="#fff"/>
+<text x="350.0" y="943.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">global table replication</text>
+<rect x="406.4" y="1015.4" width="161.1" height="10.8" fill="#fff"/>
+<text x="487.0" y="1021.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">take over fenced us-east-1 records</text>
+<rect x="700.3" y="1020.4" width="39.4" height="10.8" fill="#fff"/>
+<text x="720.0" y="1026.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">re-queue</text>
+<circle cx="163" cy="313" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="163.0" y="313.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">1</text>
+<circle cx="295" cy="581" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="295.0" y="581.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">2</text>
+<circle cx="605" cy="661" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="605.0" y="661.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">3</text>
+<circle cx="675" cy="713" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="675.0" y="713.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">4</text>
+<circle cx="407" cy="864" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="407.0" y="864.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">5</text>
+<circle cx="973" cy="813" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="973.0" y="813.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">6</text>
+<circle cx="1143" cy="701" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="1143.0" y="701.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">7</text>
+<circle cx="605" cy="549" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="605.0" y="549.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">8</text>
+<circle cx="1021" cy="371" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="1021.0" y="371.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">9</text>
+<text x="1230.0" y="914.0" font-size="11" text-anchor="start" dominant-baseline="middle" font-weight="bold" fill="#111">Legend</text>
+<text x="1290.0" y="935.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">normal path, pushed</text>
+<text x="1290.0" y="955.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">safety net and replication</text>
+<text x="1230.0" y="981.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">1 POST payment</text>
+<text x="1230.0" y="993.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">2 Conditional put, then 202 Accepted</text>
+<text x="1230.0" y="1006.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">3 Stream event relayed to the submit queue</text>
+<text x="1230.0" y="1018.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">4 UETR delivered to the Submitter</text>
+<text x="1230.0" y="1031.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">5 Claim with a lease</text>
+<text x="1230.0" y="1043.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">6 Detokenise in memory</text>
+<text x="1230.0" y="1056.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">7 POST with idempotency-key = UETR</text>
+<text x="1230.0" y="1068.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">8 Outcome written, relayed to the notify queue</text>
+<text x="1230.0" y="1081.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">9 Callback to PayX, then mark notified</text>
+<text x="1230.0" y="339.0" font-size="11" text-anchor="start" dominant-baseline="middle" font-weight="bold" fill="#111">AWS configuration: settings that matter</text>
+<text x="1230.0" y="371.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Wire Rail DB: DynamoDB global table, strongly consistent</text>
+<text x="1230.0" y="382.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">(2 replicas + witness). Streams on, new and old images. PITR.</text>
+<text x="1230.0" y="394.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Relay: Lambda on the stream, one per region. Filter on</text>
+<text x="1230.0" y="405.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">push marker + ownerRegion. Retries, then failure destination.</text>
+<text x="1230.0" y="416.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Queues: SQS standard + DLQ. Visibility timeout at least</text>
+<text x="1230.0" y="427.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">6x the function timeout. DLQ after at least 5 receives.</text>
+<text x="1230.0" y="439.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Submitter, Notifier: Lambda, SQS trigger. Batch size 1.</text>
+<text x="1230.0" y="450.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Max concurrency on the trigger. Client timeouts &lt; function</text>
+<text x="1230.0" y="461.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">timeout &lt; lease &lt; visibility timeout. Proxy to OPF and Turing.</text>
+<text x="1230.0" y="472.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Sweeper: Lambda, EventBridge Scheduler rate(1 minute) per</text>
+<text x="1230.0" y="484.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">region. Delivered at least once: one run at a time, and</text>
+<text x="1230.0" y="495.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">nextActionAt moved with a condition before queueing. Heartbeat.</text>
+<text x="1230.0" y="506.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Alarms: oldest unfinished record age, DLQ not empty,</text>
+<text x="1230.0" y="517.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">sweeper heartbeat missing, breaker open.</text>
+<text x="1230.0" y="529.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Functions, Scheduler and the strongly consistent table still</text>
+<text x="1230.0" y="540.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">need the platform's confirmation.</text>
+<path id="edge-e_ofac" class="edge" d="M360.0 120.0 L260.0 120.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e1" class="edge" d="M185.0 145.0 L185.0 570.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e2" class="edge" d="M260.0 600.0 L330.0 600.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-es" class="edge" d="M384.0 600.0 L598.0 600.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e3" class="edge" d="M625.0 627.0 L625.0 700.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e4" class="edge" d="M650.0 730.0 L820.0 730.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e5" class="edge" d="M833.5 757.0 L833.5 880.0 L357.0 880.0 L357.0 630.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e6" class="edge" d="M860.5 757.0 L860.5 830.0 L1290.0 830.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e7a" class="edge" d="M874.0 730.0 L960.0 730.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e7b" class="edge" d="M1056.0 730.0 L1245.0 730.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e7c" class="edge" d="M1435.0 730.0 L1500.0 730.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e8" class="edge" d="M625.0 573.0 L625.0 500.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e9a" class="edge" d="M650.0 470.0 L820.0 470.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e9" class="edge" d="M874.0 470.0 L1000.0 470.0 L1000.0 145.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-e10" class="edge" d="M847.0 443.0 L847.0 385.0 L357.0 385.0 L357.0 570.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-d1" class="edge" d="M598.0 817.0 L560.0 817.0 L560.0 624.0 L384.0 624.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d3" class="edge" d="M625.0 790.0 L625.0 760.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d5" class="edge" d="M847.0 703.0 L847.0 623.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d6" class="edge" d="M640.0 500.0 L640.0 532.0 L704.0 532.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d7" class="edge" d="M640.0 700.0 L640.0 668.0 L704.0 668.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d8" class="edge" d="M343.5 630.0 L343.5 1010.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d9" class="edge" d="M598.0 1040.0 L370.5 1040.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-d10" class="edge" d="M652.0 1040.0 L800.0 1040.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<path id="edge-leg_e1" class="edge" d="M1238.0 935.0 L1272.0 935.0" fill="none" stroke="#000" stroke-width="1" marker-end="url(#a)"/>
+<path id="edge-leg_e2" class="edge" d="M1238.0 955.0 L1272.0 955.0" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#a)"/>
+<rect x="102.3" y="639.8" width="170.5" height="10.8" fill="#fff"/>
+<text x="187.5" y="645.4" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">validates, converts to pain.001 V11,</text>
+<rect x="121.0" y="651.0" width="133.0" height="10.8" fill="#fff"/>
+<text x="187.5" y="656.6" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">stores, returns 202 Accepted</text>
+<rect x="400.6" y="558.5" width="48.8" height="12.0" fill="#fff"/>
+<text x="425.0" y="564.8" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">Wire Rail</text>
+<rect x="403.2" y="571.0" width="43.6" height="12.0" fill="#fff"/>
+<text x="425.0" y="577.2" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">DynamoDB</text>
+<rect x="750.2" y="525.8" width="17.6" height="12.0" fill="#fff"/>
+<text x="759.0" y="532.0" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">DLQ</text>
+<rect x="657.0" y="608.8" width="111.2" height="12.0" fill="#fff"/>
+<text x="658.0" y="615.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">Relay (stream filter)</text>
+<rect x="657.0" y="625.5" width="122.6" height="9.6" fill="#fff"/>
+<text x="658.0" y="630.5" font-size="8" text-anchor="start" dominant-baseline="middle" fill="#111">Lambda on the DynamoDB stream</text>
+<rect x="657.0" y="825.8" width="116.4" height="12.0" fill="#fff"/>
+<text x="658.0" y="832.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">Sweeper (every minute)</text>
+<rect x="657.0" y="842.5" width="122.6" height="9.6" fill="#fff"/>
+<text x="658.0" y="847.5" font-size="8" text-anchor="start" dominant-baseline="middle" fill="#111">Lambda, EventBridge Scheduler</text>
+<rect x="631.0" y="763.2" width="70.6" height="13.2" fill="#fff"/>
+<text x="632.0" y="770.0" font-size="11" text-anchor="start" dominant-baseline="middle" fill="#111">Submit queue</text>
+<rect x="879.0" y="701.2" width="53.5" height="13.2" fill="#fff"/>
+<text x="880.0" y="708.0" font-size="11" text-anchor="start" dominant-baseline="middle" fill="#111">Submitter</text>
+<rect x="879.0" y="685.5" width="81.0" height="9.6" fill="#fff"/>
+<text x="880.0" y="690.5" font-size="8" text-anchor="start" dominant-baseline="middle" fill="#111">Lambda, SQS trigger</text>
+<rect x="750.2" y="661.8" width="17.6" height="12.0" fill="#fff"/>
+<text x="759.0" y="668.0" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">DLQ</text>
+<rect x="218.4" y="1027.5" width="95.6" height="12.0" fill="#fff"/>
+<text x="313.0" y="1033.8" font-size="10" text-anchor="end" dominant-baseline="middle" fill="#111">Wire Rail DynamoDB</text>
+<rect x="275.6" y="1040.0" width="38.4" height="12.0" fill="#fff"/>
+<text x="313.0" y="1046.2" font-size="10" text-anchor="end" dominant-baseline="middle" fill="#111">replica</text>
+<rect x="605.8" y="1069.8" width="38.4" height="12.0" fill="#fff"/>
+<text x="625.0" y="1076.0" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">Sweeper</text>
+<rect x="302.6" y="101.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="313.0" y="107.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">OFAC</text>
+<rect x="200.9" y="307.4" width="58.2" height="10.8" fill="#fff"/>
+<text x="230.0" y="313.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">POST payment</text>
+<rect x="270.6" y="607.4" width="48.8" height="10.8" fill="#fff"/>
+<text x="295.0" y="613.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">put if new</text>
+<rect x="500.9" y="581.4" width="58.2" height="10.8" fill="#fff"/>
+<text x="530.0" y="587.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">stream event</text>
+<rect x="630.0" y="641.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="631.0" y="647.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="689.0" y="710.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="690.0" y="716.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="435.5" y="860.4" width="147.1" height="10.8" fill="#fff"/>
+<text x="509.0" y="866.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">claim with lease, write outcome</text>
+<rect x="1001.2" y="811.4" width="95.6" height="10.8" fill="#fff"/>
+<text x="1049.0" y="817.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">detokenise in memory</text>
+<rect x="1105.6" y="740.8" width="20.7" height="10.8" fill="#fff"/>
+<text x="1116.0" y="746.4" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">POST</text>
+<rect x="1063.5" y="752.0" width="105.0" height="10.8" fill="#fff"/>
+<text x="1116.0" y="757.6" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">idempotency-key = UETR</text>
+<rect x="630.0" y="549.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="631.0" y="555.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="717.6" y="452.4" width="20.7" height="10.8" fill="#fff"/>
+<text x="728.0" y="458.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">UETR</text>
+<rect x="1013.6" y="396.4" width="76.9" height="10.8" fill="#fff"/>
+<text x="1052.0" y="402.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">outcome callback</text>
+<rect x="458.6" y="392.4" width="62.8" height="10.8" fill="#fff"/>
+<text x="490.0" y="398.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">mark notified</text>
+<rect x="419.0" y="631.4" width="95.6" height="10.8" fill="#fff"/>
+<text x="420.0" y="637.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">query due, take over</text>
+<rect x="579.6" y="769.4" width="39.4" height="10.8" fill="#fff"/>
+<text x="618.0" y="775.0" font-size="9" text-anchor="end" dominant-baseline="middle" fill="#111">re-queue</text>
+<rect x="855.0" y="656.4" width="62.8" height="10.8" fill="#fff"/>
+<text x="856.0" y="662.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">reads breaker</text>
+<rect x="349.0" y="937.4" width="114.3" height="10.8" fill="#fff"/>
+<text x="350.0" y="943.0" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">global table replication</text>
+<rect x="406.4" y="1015.4" width="161.1" height="10.8" fill="#fff"/>
+<text x="487.0" y="1021.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">take over fenced us-east-1 records</text>
+<rect x="700.3" y="1020.4" width="39.4" height="10.8" fill="#fff"/>
+<text x="720.0" y="1026.0" font-size="9" text-anchor="middle" dominant-baseline="middle" fill="#111">re-queue</text>
+<circle cx="163" cy="313" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="163.0" y="313.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">1</text>
+<circle cx="295" cy="581" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="295.0" y="581.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">2</text>
+<circle cx="605" cy="661" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="605.0" y="661.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">3</text>
+<circle cx="675" cy="713" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="675.0" y="713.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">4</text>
+<circle cx="407" cy="864" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="407.0" y="864.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">5</text>
+<circle cx="973" cy="813" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="973.0" y="813.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">6</text>
+<circle cx="1143" cy="701" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="1143.0" y="701.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">7</text>
+<circle cx="605" cy="549" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="605.0" y="549.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">8</text>
+<circle cx="1021" cy="371" r="11" fill="#fff2cc" stroke="#d6b656"/>
+<text x="1021.0" y="371.5" font-size="10" text-anchor="middle" dominant-baseline="middle" font-weight="bold" fill="#111">9</text>
+<text x="1230.0" y="914.0" font-size="11" text-anchor="start" dominant-baseline="middle" font-weight="bold" fill="#111">Legend</text>
+<text x="1290.0" y="935.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">normal path, pushed</text>
+<text x="1290.0" y="955.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">safety net and replication</text>
+<text x="1230.0" y="981.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">1 POST payment</text>
+<text x="1230.0" y="993.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">2 Conditional put, then 202 Accepted</text>
+<text x="1230.0" y="1006.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">3 Stream event relayed to the submit queue</text>
+<text x="1230.0" y="1018.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">4 UETR delivered to the Submitter</text>
+<text x="1230.0" y="1031.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">5 Claim with a lease</text>
+<text x="1230.0" y="1043.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">6 Detokenise in memory</text>
+<text x="1230.0" y="1056.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">7 POST with idempotency-key = UETR</text>
+<text x="1230.0" y="1068.5" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">8 Outcome written, relayed to the notify queue</text>
+<text x="1230.0" y="1081.0" font-size="10" text-anchor="start" dominant-baseline="middle" fill="#111">9 Callback to PayX, then mark notified</text>
+<text x="1230.0" y="339.0" font-size="11" text-anchor="start" dominant-baseline="middle" font-weight="bold" fill="#111">AWS configuration: settings that matter</text>
+<text x="1230.0" y="371.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Wire Rail DB: DynamoDB global table, strongly consistent</text>
+<text x="1230.0" y="382.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">(2 replicas + witness). Streams on, new and old images. PITR.</text>
+<text x="1230.0" y="394.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Relay: Lambda on the stream, one per region. Filter on</text>
+<text x="1230.0" y="405.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">push marker + ownerRegion. Retries, then failure destination.</text>
+<text x="1230.0" y="416.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Queues: SQS standard + DLQ. Visibility timeout at least</text>
+<text x="1230.0" y="427.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">6x the function timeout. DLQ after at least 5 receives.</text>
+<text x="1230.0" y="439.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Submitter, Notifier: Lambda, SQS trigger. Batch size 1.</text>
+<text x="1230.0" y="450.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Max concurrency on the trigger. Client timeouts &lt; function</text>
+<text x="1230.0" y="461.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">timeout &lt; lease &lt; visibility timeout. Proxy to OPF and Turing.</text>
+<text x="1230.0" y="472.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Sweeper: Lambda, EventBridge Scheduler rate(1 minute) per</text>
+<text x="1230.0" y="484.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">region. Delivered at least once: one run at a time, and</text>
+<text x="1230.0" y="495.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">nextActionAt moved with a condition before queueing. Heartbeat.</text>
+<text x="1230.0" y="506.6" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Alarms: oldest unfinished record age, DLQ not empty,</text>
+<text x="1230.0" y="517.9" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">sweeper heartbeat missing, breaker open.</text>
+<text x="1230.0" y="529.1" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">Functions, Scheduler and the strongly consistent table still</text>
+<text x="1230.0" y="540.4" font-size="9" text-anchor="start" dominant-baseline="middle" fill="#111">need the platform's confirmation.</text>
+</svg></div>
+  <div class="panel">
+    <div class="card now">
+      <div class="controls">
+        <button class="ctl" id="prev">Back</button>
+        <button class="ctl primary" id="play">Play</button>
+        <button class="ctl" id="next">Next</button>
+        <button class="ctl" id="restart">Restart</button>
+        <label class="speed">Speed
+          <select id="speed"><option value="0.6">Slow</option><option value="1" selected>Normal</option><option value="1.8">Fast</option></select>
+        </label>
+      </div>
+      <div class="caption"><div class="badge blank" id="badge"></div><p id="caption">Press Play, or Next to go one step at a time.</p></div>
+      <div class="count" id="count"></div>
+      <div id="err"></div>
+      <p class="note">Solid lines are the pushed normal path. Dashed lines are the safety net and replication. The icons are simplified drawings of the ones in the team's draw.io diagram.</p>
+    </div>
+    <ol class="card steps" id="steps"></ol>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+<script>
+window.onerror = function (m) { document.getElementById('err').textContent = 'Script error: ' + m; };
+const DATA = {"nodes": {"px_outer": {"x": 40, "y": 30, "w": 1160, "h": 170}, "px_inner": {"x": 65, "y": 55, "w": 1110, "h": 120}, "px_title": {"x": 470, "y": 58, "w": 300, "h": 20}, "pxi": {"x": 110, "y": 95, "w": 150, "h": 50}, "ofac": {"x": 360, "y": 95, "w": 80, "h": 50}, "pxcb": {"x": 925, "y": 95, "w": 150, "h": 50}, "gw_back": {"x": 90, "y": 222, "w": 1010, "h": 58}, "gw_cat": {"x": 100, "y": 224, "w": 60, "h": 16}, "gw_bar": {"x": 105, "y": 244, "w": 980, "h": 26}, "w2_outer": {"x": 40, "y": 320, "w": 1160, "h": 610}, "w2_inner": {"x": 65, "y": 345, "w": 1110, "h": 560}, "w2_title": {"x": 480, "y": 350, "w": 260, "h": 20}, "api": {"x": 110, "y": 570, "w": 150, "h": 60}, "api_note": {"x": 80, "y": 636, "w": 215, "h": 30}, "ddb": {"x": 330, "y": 570, "w": 54, "h": 60}, "ddb_label": {"x": 388, "y": 556, "w": 74, "h": 30}, "notq": {"x": 600, "y": 440, "w": 50, "h": 60}, "notif": {"x": 820, "y": 443, "w": 54, "h": 54}, "notdlq": {"x": 704, "y": 512, "w": 34, "h": 40}, "notdlq_label": {"x": 742, "y": 524, "w": 34, "h": 16}, "relay": {"x": 598, "y": 573, "w": 54, "h": 54}, "relay_label": {"x": 658, "y": 607, "w": 128, "h": 16}, "relay_aws": {"x": 658, "y": 624, "w": 128, "h": 13}, "sweeper": {"x": 598, "y": 790, "w": 54, "h": 54}, "sweeper_label": {"x": 658, "y": 824, "w": 128, "h": 16}, "sweeper_aws": {"x": 658, "y": 841, "w": 128, "h": 13}, "control": {"x": 792, "y": 577, "w": 110, "h": 46}, "subq": {"x": 600, "y": 700, "w": 50, "h": 60}, "subq_label": {"x": 632, "y": 762, "w": 80, "h": 16}, "sub": {"x": 820, "y": 703, "w": 54, "h": 54}, "sub_label": {"x": 880, "y": 700, "w": 64, "h": 16}, "sub_aws": {"x": 880, "y": 684, "w": 80, "h": 13}, "subdlq": {"x": 704, "y": 648, "w": 34, "h": 40}, "subdlq_label": {"x": 742, "y": 660, "w": 34, "h": 16}, "doc": {"x": 960, "y": 706, "w": 96, "h": 48}, "pg_back": {"x": 1230, "y": 700, "w": 220, "h": 60}, "pg_cat": {"x": 1238, "y": 701, "w": 60, "h": 14}, "pg_bar": {"x": 1245, "y": 717, "w": 190, "h": 26}, "opf": {"x": 1500, "y": 703, "w": 56, "h": 54}, "turing": {"x": 1290, "y": 803, "w": 56, "h": 54}, "w2w_outer": {"x": 40, "y": 955, "w": 1160, "h": 160}, "w2w_inner": {"x": 65, "y": 980, "w": 1110, "h": 110}, "w2w_title": {"x": 700, "y": 984, "w": 420, "h": 20}, "ddbw": {"x": 316.5, "y": 1010, "w": 54, "h": 60}, "ddbw_label": {"x": 205, "y": 1025, "w": 108, "h": 30}, "sweeperw": {"x": 598, "y": 1013, "w": 54, "h": 54}, "sweeperw_label": {"x": 598, "y": 1069, "w": 54, "h": 14}, "stackw": {"x": 800, "y": 1017, "w": 200, "h": 46}, "l_ofac": {"x": 296, "y": 100, "w": 34, "h": 14}, "l1": {"x": 192, "y": 306, "w": 76, "h": 14}, "l2": {"x": 265, "y": 606, "w": 60, "h": 14}, "les": {"x": 470, "y": 580, "w": 120, "h": 14}, "l3": {"x": 631, "y": 640, "w": 30, "h": 14}, "l4": {"x": 690, "y": 709, "w": 30, "h": 14}, "l5": {"x": 424, "y": 859, "w": 170, "h": 14}, "l6": {"x": 990, "y": 810, "w": 118, "h": 14}, "l7": {"x": 1060, "y": 738, "w": 112, "h": 28}, "l8": {"x": 631, "y": 548, "w": 30, "h": 14}, "l9a": {"x": 708, "y": 451, "w": 40, "h": 14}, "l9": {"x": 1006, "y": 395, "w": 92, "h": 14}, "l10": {"x": 450, "y": 391, "w": 80, "h": 14}, "ld1": {"x": 420, "y": 630, "w": 130, "h": 14}, "ld3": {"x": 566, "y": 768, "w": 52, "h": 14}, "ld5": {"x": 856, "y": 655, "w": 76, "h": 14}, "ld8": {"x": 350, "y": 936, "w": 130, "h": 14}, "ld9": {"x": 392, "y": 1014, "w": 190, "h": 14}, "ld10": {"x": 690, "y": 1019, "w": 60, "h": 14}, "step1": {"x": 152, "y": 302, "w": 22, "h": 22}, "step2": {"x": 284, "y": 570, "w": 22, "h": 22}, "step3": {"x": 594, "y": 650, "w": 22, "h": 22}, "step4": {"x": 664, "y": 702, "w": 22, "h": 22}, "step5": {"x": 396, "y": 853, "w": 22, "h": 22}, "step6": {"x": 962, "y": 802, "w": 22, "h": 22}, "step7": {"x": 1132, "y": 690, "w": 22, "h": 22}, "step8": {"x": 594, "y": 538, "w": 22, "h": 22}, "step9": {"x": 1010, "y": 360, "w": 22, "h": 22}, "legend_title": {"x": 1230, "y": 905, "w": 300, "h": 18}, "legend_1": {"x": 1290, "y": 928, "w": 280, "h": 14}, "legend_2": {"x": 1290, "y": 948, "w": 280, "h": 14}, "leg_a": {"x": 1230, "y": 931, "w": 8, "h": 8}, "leg_b": {"x": 1272, "y": 931, "w": 8, "h": 8}, "leg_c": {"x": 1230, "y": 951, "w": 8, "h": 8}, "leg_d": {"x": 1272, "y": 951, "w": 8, "h": 8}, "steps": {"x": 1230, "y": 972, "w": 330, "h": 118}, "cfg_title": {"x": 1230, "y": 330, "w": 380, "h": 18}, "cfg": {"x": 1230, "y": 352, "w": 380, "h": 208}}, "edges": {"e_ofac": {"src": "ofac", "tgt": "pxi"}, "e1": {"src": "pxi", "tgt": "api"}, "e2": {"src": "api", "tgt": "ddb"}, "es": {"src": "ddb", "tgt": "relay"}, "e3": {"src": "relay", "tgt": "subq"}, "e4": {"src": "subq", "tgt": "sub"}, "e5": {"src": "sub", "tgt": "ddb"}, "e6": {"src": "sub", "tgt": "turing"}, "e7a": {"src": "sub", "tgt": "doc"}, "e7b": {"src": "doc", "tgt": "pg_bar"}, "e7c": {"src": "pg_bar", "tgt": "opf"}, "e8": {"src": "relay", "tgt": "notq"}, "e9a": {"src": "notq", "tgt": "notif"}, "e9": {"src": "notif", "tgt": "pxcb"}, "e10": {"src": "notif", "tgt": "ddb"}, "d1": {"src": "sweeper", "tgt": "ddb"}, "d3": {"src": "sweeper", "tgt": "subq"}, "d5": {"src": "sub", "tgt": "control"}, "d6": {"src": "notq", "tgt": "notdlq"}, "d7": {"src": "subq", "tgt": "subdlq"}, "d8": {"src": "ddb", "tgt": "ddbw"}, "d9": {"src": "sweeperw", "tgt": "ddbw"}, "d10": {"src": "sweeperw", "tgt": "stackw"}, "leg_e1": {"src": "leg_a", "tgt": "leg_b"}, "leg_e2": {"src": "leg_c", "tgt": "leg_d"}}, "scenarios": {"normal": {"title": "Normal path", "intro": "The normal path is pushed from end to end. Nothing waits for a timer.", "steps": [{"n": 1, "edges": ["e1"], "text": "The PayX integration service posts the payment through the internal gateway."}, {"n": 2, "edges": ["e2"], "text": "The API validates and converts the payment, then writes the record only if the UETR is new. It answers 202 Accepted."}, {"n": 3, "edges": ["e3"], "text": "The stream of the table is relayed to the submit queue. The message carries only the UETR."}, {"n": 4, "edges": ["e4"], "text": "The queue delivers the UETR to the Submitter."}, {"n": 5, "edges": ["e5"], "text": "The Submitter claims the record with a lease. Only one worker can hold it."}, {"n": 6, "edges": ["e6"], "text": "It detokenises the account numbers through Turing, in memory only."}, {"n": 7, "edges": ["e7a", "e7b", "e7c"], "text": "It posts the stored request to OPF with the UETR as the idempotency key. OPF answers 202."}, {"n": 8, "edges": ["e5", "e8"], "text": "It writes the outcome if it still holds the lease. The change of status is relayed to the notify queue."}, {"n": null, "edges": ["e9a"], "text": "The queue delivers the UETR to the Notifier."}, {"n": 9, "edges": ["e9"], "text": "The Notifier calls the PayX callback API with the outcome."}, {"n": 9, "edges": ["e10"], "text": "It marks the record notified. The record leaves the list of unfinished work."}]}, "outage": {"title": "OPF is down", "intro": "A vendor outage. Wires wait without burning attempts, one probe goes out, and the backlog drains by itself.", "steps": [{"n": null, "edges": ["e3", "e4"], "text": "A wire is accepted and pushed to the Submitter as usual."}, {"n": null, "edges": ["e5"], "text": "The Submitter claims the record."}, {"n": null, "edges": ["e7a", "e7b", "e7c"], "text": "The call to OPF fails. After a run of failures across wires, the breaker opens.", "fail": true, "nodes": ["control"]}, {"n": null, "edges": ["e5"], "text": "The record is parked with a later time. No attempt is counted, and the queue message is finished normally."}, {"n": null, "edges": ["e1", "e2"], "text": "The API keeps accepting new wires. They are stored and wait."}, {"n": null, "edges": ["d5"], "text": "While the breaker is open, the Submitter reads it and does not call OPF."}, {"n": null, "edges": ["d1", "d1"], "text": "Every minute the Sweeper reads the unfinished records and the breaker."}, {"n": null, "edges": ["d3", "e4", "e7a", "e7b", "e7c"], "text": "It re-queues one record as a probe. When OPF answers again, the breaker closes."}, {"n": null, "edges": ["d3"], "text": "The Sweeper then re-queues the waiting records at a set rate. Past the deadline, a wire is never sent automatically."}]}, "takeover": {"title": "Region takeover", "intro": "One region stops. New wires move by themselves. Its waiting wires are taken over once the evacuation runbook has fenced it.", "steps": [{"n": null, "edges": [], "text": "us-east-1 stops working its records. Wires are waiting there. New requests are routed to us-west-2.", "tint": ["w2_inner"], "tintLabel": "us-east-1 has stopped driving its records"}, {"n": null, "edges": ["d8"], "text": "The waiting records are already in us-west-2: every write is confirmed by a second region.", "tint": ["w2_inner"], "tintLabel": "us-east-1 has stopped driving its records"}, {"n": null, "edges": [], "text": "The evacuation runbook writes a fence for us-east-1 into the control records, from us-west-2, and waits about two minutes.", "nodes": ["sweeperw", "ddbw"], "tint": ["w2_inner"], "tintLabel": "us-east-1 has stopped driving its records"}, {"n": null, "edges": ["d9"], "text": "The us-west-2 Sweeper sees the fence and takes the waiting records over: it writes its own region as the owner and raises the owner epoch.", "tint": ["w2_inner"], "tintLabel": "us-east-1 has stopped driving its records"}, {"n": null, "edges": ["d10"], "text": "It queues them locally. The us-west-2 Submitter sends the same stored request with the same key, so OPF sees a retry, not a new wire.", "tint": ["w2_inner"], "tintLabel": "us-east-1 has stopped driving its records"}, {"n": null, "edges": [], "text": "When us-east-1 returns it reads the fence before doing any work. Its old queue messages are dropped: the claim requires the region to own the record at the current epoch.", "nodes": ["subq", "sub"]}, {"n": null, "edges": ["e1"], "text": "A wire answered with 202 just before the failure is not lost: the API answers only after a second region holds the record.", "nodes": ["gw_bar"]}]}}, "tips": {"pxi": "PayX Integration Service. Calls the Wire Rail II API after OFAC and waits for the callback.", "pxcb": "PayX Callback API. Receives the outcome and produces WIRECLEARING or WIRECLEARING.STOP.", "ofac": "OFAC stage in Payment Exchange, before the rail.", "gw_bar": "Internal API gateway. Health-checked routing to either region.", "api": "Wire Rail II API. Validates, converts to pain.001 V11, writes the record if the UETR is new, answers 202.", "ddb": "Wire Rail DynamoDB, a strongly consistent global table (two replicas and a witness). The single source of truth: one record per wire, keyed by UETR, with an index of unfinished records. Streams on with new and old images; point-in-time recovery; breaker and heartbeat under reserved keys.", "subq": "Submit queue (SQS standard, with a dead-letter queue). Carries only the UETR. Visibility timeout at least six times the function timeout; dead-letter after at least five receives.", "notq": "Notify queue (SQS standard, with a dead-letter queue). Carries only the UETR. Same settings as the submit queue.", "subdlq": "Dead-letter queue. Holds only messages the code could not process. Waiting wires never land here.", "notdlq": "Dead-letter queue. Holds only messages the code could not process.", "sub": "Submitter: Lambda with an SQS trigger, batch size 1, maximum concurrency on the trigger. Claims the record, detokenises in memory, posts to OPF with idempotency-key = UETR, writes the outcome. Function timeout shorter than the lease.", "notif": "Notifier: Lambda with an SQS trigger, same settings as the Submitter. Calls the PayX callback API, then marks the record notified.", "relay": "Relay: one Lambda per region on the DynamoDB stream. An event filter keeps only writes whose new image carries a push marker for this region; it puts the UETR on the submit queue or the notify queue. A few retries, then a failure destination; the Sweeper covers what is dropped.", "sweeper": "Sweeper: Lambda started by an EventBridge Scheduler rate(1 minute) schedule per region, delivered at least once, one run at a time. Re-queues what is due (submit queue, or notify queue for an undelivered outcome) after moving nextActionAt with a condition, ends retries at the deadline, probes OPF while the breaker is open, writes a heartbeat, takes over the waiting records of the other region once the evacuation runbook has fenced it.", "control": "Control records. The breaker says whether OPF is reachable from this region. The fence, written by the evacuation runbook, tells a region to stop starting work.", "doc": "The request sent to OPF. Converted once at acceptance and stored, so every attempt sends the same bytes.", "pg_bar": "API Partner Gateway. The route to FIS.", "opf": "FIS OPF API. Treats a repeat with the same key and body as a retry.", "turing": "Turing. Turns tokens back into account numbers, for one call, in memory.", "ddbw": "The same global table, replicated to us-west-2.", "sweeperw": "The us-west-2 Sweeper. Takes over the waiting records of us-east-1 once the runbook has fenced it.", "stackw": "us-west-2 runs the same queues, Submitter and Notifier."}};
+const svg = document.querySelector('#stage svg');
+const NS = 'http://www.w3.org/2000/svg';
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const el = (name, attrs) => { const n = document.createElementNS(NS, name); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+
+// layers: tint under everything interactive, glow and token on top
+const tintLayer = el('g', {}); const glowLayer = el('g', {}); const hitLayer = el('g', {});
+svg.appendChild(tintLayer); svg.appendChild(glowLayer);
+const token = el('circle', { id: 'token', r: 7, cx: -50, cy: -50 });
+const cross = el('text', { id: 'cross', x: -50, y: -50, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
+cross.textContent = '✕';
+svg.appendChild(token); svg.appendChild(cross); svg.appendChild(hitLayer);
+
+// hover targets
+const tip = document.getElementById('tip');
+for (const id in DATA.tips) {
+  const b = DATA.nodes[id]; if (!b) continue;
+  const r = el('rect', { class: 'hit', x: b.x - 4, y: b.y - 4, width: b.w + 8, height: b.h + 8 });
+  r.addEventListener('mousemove', (ev) => {
+    tip.textContent = DATA.tips[id]; tip.classList.add('on');
+    const x = Math.min(ev.clientX + 14, window.innerWidth - 340), y = ev.clientY + 16;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  });
+  r.addEventListener('mouseleave', () => tip.classList.remove('on'));
+  hitLayer.appendChild(r);
+}
+
+let sc = Object.keys(DATA.scenarios)[0], idx = -1, playing = false, runId = 0;
+const speedSel = document.getElementById('speed');
+const edgeEl = (id) => document.getElementById('edge-' + id);
+
+function buildTabs() {
+  const tabs = document.getElementById('tabs'); tabs.innerHTML = '';
+  for (const k in DATA.scenarios) {
+    const b = document.createElement('button'); b.className = 'tab'; b.textContent = DATA.scenarios[k].title;
+    b.setAttribute('aria-pressed', k === sc ? 'true' : 'false');
+    b.addEventListener('click', () => { sc = k; idx = -1; stop(); buildTabs(); buildSteps(); render(false); });
+    tabs.appendChild(b);
+  }
+}
+function buildSteps() {
+  const ol = document.getElementById('steps'); ol.innerHTML = '';
+  DATA.scenarios[sc].steps.forEach((s, i) => {
+    const li = document.createElement('li'); li.textContent = (i + 1) + '. ' + s.text;
+    li.addEventListener('click', () => { stop(); idx = i; render(true); });
+    ol.appendChild(li);
+  });
+}
+function clearMarks() {
+  svg.querySelectorAll('.edge').forEach((p) => { p.classList.remove('active', 'done', 'fail'); p.setAttribute('marker-end', 'url(#a)'); });
+  glowLayer.innerHTML = ''; tintLayer.innerHTML = '';
+  token.setAttribute('cx', -50); token.setAttribute('cy', -50); token.classList.remove('fail');
+  cross.setAttribute('x', -50); cross.setAttribute('y', -50);
+}
+function nodesOf(step) {
+  const set = new Set(step.nodes || []);
+  (step.edges || []).forEach((e) => { const d = DATA.edges[e]; if (d) { set.add(d.src); set.add(d.tgt); } });
+  return [...set];
+}
+function render(animate) {
+  runId++; const my = runId; clearMarks();
+  const steps = DATA.scenarios[sc].steps;
+  document.querySelectorAll('#steps li').forEach((li, i) => { li.classList.toggle('cur', i === idx); li.classList.toggle('past', i < idx); });
+  const cur = document.querySelector('#steps li.cur'); if (cur) cur.scrollIntoView({ block: 'nearest' });
+  const badge = document.getElementById('badge'), cap = document.getElementById('caption');
+  document.getElementById('prev').disabled = idx <= 0;
+  document.getElementById('next').disabled = idx >= steps.length - 1;
+  document.getElementById('count').textContent = idx < 0 ? steps.length + ' steps in this scenario' : 'Step ' + (idx + 1) + ' of ' + steps.length;
+  if (idx < 0) { badge.classList.add('blank'); cap.textContent = DATA.scenarios[sc].intro; return; }
+  for (let i = 0; i < idx; i++) (steps[i].edges || []).forEach((e) => { const p = edgeEl(e); if (p && !steps[i].fail) { p.classList.add('done'); p.setAttribute('marker-end', 'url(#adone)'); } });
+  const s = steps[idx];
+  if (s.n) { badge.textContent = s.n; badge.classList.remove('blank'); } else { badge.classList.add('blank'); }
+  cap.textContent = s.text;
+  (s.tint || []).forEach((id) => {
+    const b = DATA.nodes[id]; if (!b) return;
+    tintLayer.appendChild(el('rect', { class: 'tint', x: b.x, y: b.y, width: b.w, height: b.h }));
+    const t = el('text', { class: 'tintlabel', x: b.x + 14, y: b.y + 24 }); t.textContent = s.tintLabel || ''; tintLayer.appendChild(t);
+  });
+  nodesOf(s).forEach((id) => {
+    const b = DATA.nodes[id]; if (!b) return;
+    const g = el('rect', { class: 'glow', x: b.x - 5, y: b.y - 5, width: b.w + 10, height: b.h + 10 });
+    glowLayer.appendChild(g); requestAnimationFrame(() => g.classList.add('on'));
+  });
+  const paths = (s.edges || []).map(edgeEl).filter(Boolean);
+  paths.forEach((p) => { p.classList.add('active'); p.setAttribute('marker-end', s.fail ? 'url(#afail)' : 'url(#aact)'); if (s.fail) p.classList.add('fail'); });
+  const after = () => { if (my !== runId) return; if (playing) { if (idx < steps.length - 1) setTimeout(() => { if (my === runId && playing) { idx++; render(true); } }, 900 / speed()); else stop(); } };
+  if (!animate || reduce || !paths.length) { if (paths.length) { const p = paths[paths.length - 1]; const pt = p.getPointAtLength(p.getTotalLength() * (s.fail ? 0.7 : 1)); place(pt, s.fail); } setTimeout(after, reduce ? 1200 / speed() : 0); return; }
+  travel(paths, 0, s.fail, my, after);
+}
+function speed() { return parseFloat(speedSel.value) || 1; }
+function place(pt, fail) {
+  token.setAttribute('cx', pt.x); token.setAttribute('cy', pt.y); token.classList.toggle('fail', !!fail);
+  if (fail) { cross.setAttribute('x', pt.x); cross.setAttribute('y', pt.y - 16); }
+}
+function travel(paths, k, fail, my, done) {
+  if (k >= paths.length) { done(); return; }
+  const p = paths[k], len = p.getTotalLength(), last = k === paths.length - 1;
+  const end = fail && last ? 0.7 : 1;
+  const dur = Math.max(450, Math.min(1500, len * 2.4)) / speed();
+  const t0 = performance.now();
+  token.classList.remove('fail');
+  (function frame(now) {
+    if (my !== runId) return;
+    let t = Math.min(1, (now - t0) / dur);
+    const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const pt = p.getPointAtLength(len * end * e);
+    token.setAttribute('cx', pt.x); token.setAttribute('cy', pt.y);
+    if (t < 1) requestAnimationFrame(frame);
+    else { if (fail && last) place(pt, true); travel(paths, k + 1, fail, my, done); }
+  })(t0);
+}
+function stop() { playing = false; document.getElementById('play').textContent = 'Play'; }
+document.getElementById('play').addEventListener('click', () => {
+  const steps = DATA.scenarios[sc].steps;
+  if (playing) { stop(); return; }
+  playing = true; document.getElementById('play').textContent = 'Pause';
+  if (idx >= steps.length - 1) idx = -1;
+  idx++; render(true);
+});
+document.getElementById('next').addEventListener('click', () => { stop(); if (idx < DATA.scenarios[sc].steps.length - 1) { idx++; render(true); } });
+document.getElementById('prev').addEventListener('click', () => { stop(); if (idx > 0) { idx--; render(false); } });
+document.getElementById('restart').addEventListener('click', () => { stop(); idx = -1; render(false); });
+document.addEventListener('keydown', (ev) => {
+  if (ev.target.tagName === 'SELECT') return;
+  if (ev.key === 'ArrowRight') document.getElementById('next').click();
+  if (ev.key === 'ArrowLeft') document.getElementById('prev').click();
+  if (ev.key === ' ') { ev.preventDefault(); document.getElementById('play').click(); }
+});
+// open at a given step with #scenario-step, for example #outage-3
+(function fromHash() {
+  const m = /^#([a-z]+)-(\d+)$/.exec(location.hash);
+  if (m && DATA.scenarios[m[1]]) { sc = m[1]; idx = Math.min(parseInt(m[2], 10) - 1, DATA.scenarios[sc].steps.length - 1); }
+  buildTabs(); buildSteps(); render(false);
+})();
+</script>
+</body>
+</html>
