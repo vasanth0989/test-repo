@@ -1,12 +1,28 @@
-Hi Kaushik, thanks for this. I went through your option and I agree with it. One table owner, a Submitter with no database access, one pipe and one queue. It is simpler than what I presented and it meets regional isolation, so I have moved to it.
+Hi Cameron, following up on today's office hour. I have reworked the design on your feedback and would like your OK on the direction before I change the ADR.
 
-I made a few additions on top of it, mostly from Cameron's questions:
+**What changed**
 
-1. Circuit breaker in the API, at the lease. If FIS is down for hours, wires wait in the table and one real wire is sent as a probe. Nothing reaches the DLQ and no redrive is needed.
-2. A submit deadline, and a reason on PARKED: not sent, or outcome unknown.
-3. Active region healthy but unable to reach OPF: the breaker feeds the routing control.
-4. The uuid header derived from the UETR, so a record re-created in the other region cannot look like a new request to FIS.
-5. PayX replays once when .WIRECLEARING misses its SLA. This covers a wire accepted just before a region is lost.
-6. A failure analysis table, as Sanjeev asked.
+1. **Sweeper.** It is now its own Lambda on a one-minute schedule, outside the Wire II API, as you suggested. It writes the table directly, limited to conditional updates of the dispatch flag, the owner and PARKED. Going through the API would put the sweep load back into the API tasks. The API stays the only writer of a wire's request and outcome.
+2. **Where the breaker lives.** I gave two answers in the call. It is a row of its own in the transaction table (key `us-east-1#breaker#OPF`, `recordType = BREAKER`), so the global table copies it and each region can read the other's. If you prefer a separate small table for it, that works too and changes nothing else.
 
-I also split the page back into Capability 10 for the Wire II API and Capability 3 for the dispatch and the Submitter, since we have two services again. I edited your page directly for this. If you would prefer your version untouched while we decide, I can restore it from the page history.
+**Your regional questions**
+
+3. **The gap.** The standby has no traffic, so its breaker is closed without proving anything. I added `lastProvenAt` to the breaker row and a one-minute path check: one authenticated FIS call that creates no payment, sent through the normal queue and Submitter.
+4. **How long, and how.** When a region's breaker has been open for 5 minutes and the other region is closed and proven within the last 3, the other region's Sweeper adopts the waiting wires (owner becomes its region, dispatch requested), 60 per sweep. Its Submitter sends the same stored request with the same key. Wires stuck in East go out from West after about 6 minutes.
+5. **New wires.** East keeps answering 202 and West sends them about a minute later. No routing switch is needed when a region is only cut from OPF. A lost region is covered by the normal API health routing plus the same adoption rule.
+6. **Who decides.** Each region's API owns its own breaker. The able region's Sweeper decides the takeover from the two breaker rows. If both are open it is an OPF outage: nobody adopts, wires wait, and retries stay with the owning region.
+
+**Flow page**
+
+Every step now lists the API calls it makes (leases, outcome, reported, checks) and shows the breaker row as it changes. The OPF 400 path now ends in REJECTED. "Region cut from OPF" shows the takeover with clock times.
+
+- Flow: <link to the flow page>
+- Design note: <link to the design note>
+
+**Still open**
+
+- Which FIS call can serve as the path check.
+- Whether a 5-minute wait before takeover fits the PayX status deadline.
+- How we provision EventBridge Pipes, from your call-out.
+
+Are you good with this direction? If yes, I will update the ADR and take it to Kaushik and Sanjeev.
