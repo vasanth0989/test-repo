@@ -2,13 +2,13 @@
 type: Planning
 title: Wire II Async Design — Detailed Design (DynamoDB Outbox, SQS, Sweeper, and Regional Takeover)
 description: Detailed design for the asynchronous Wire II flow (pain.001 generation, BAN detokenization, OPF submission). Builds on the initial async design draft. Adds the failure handling, the circuit breaker, the submit deadline, the sweeper rules, the AWS configuration that matters, and what is reused after Phase 1.
-tags: [planning, architecture, wire-ii, opf, async, outbox, resiliency, platinum, dynamodb, sqs, lambda]
-timestamp: 2026-11-16 19:00:00 UTC
+tags: [planning, architecture, wire-ii, opf, async, outbox, resiliency, platinum, dynamodb, sqs, lambda, eventbridge, fmea]
+timestamp: 2026-11-18 15:00:00 UTC
 ---
 
 # Wire II Async Design — Detailed Design (DynamoDB Outbox, SQS, Sweeper, and Regional Takeover)
 
-> **Status: DRAFT — for review.** This document builds on the initial async design draft (`content/planning/wire-ii-async-design.md`, 2026-11-13). The architecture is the same: the DynamoDB item is the outbox, DynamoDB Streams and SQS dispatch the work, a sweeper covers what the push path misses, and regional takeover is fence-first and runbook-driven. This document goes one level deeper on each part and proposes a small number of changes. Every change is listed with its reason in §14, so each one can be accepted or rejected on its own. If the design is adopted, the Capability 10 ADR (ADR-0003, Confluence `3445334201`) must be updated to record the reversal of the inline, synchronous flow.
+> **Status: DRAFT — for review.** This document builds on the initial async design draft (`content/planning/wire-ii-async-design.md`, 2026-11-13). The architecture is the same: the DynamoDB item is the outbox, DynamoDB Streams and SQS dispatch the work, a sweeper covers what the push path misses, and regional takeover is fence-first and runbook-driven. This document goes one level deeper on each part and proposes a small number of changes. Every change is listed with its reason in §14, so each one can be accepted or rejected on its own. If the design is adopted, the Capability 10 ADR (ADR-0003, Confluence `3445334201`) must be updated to record the reversal of the inline, synchronous flow. **Reviewed with the squad on 2026-11-17 and accepted overall, with action items.** What changed because of that review is listed in §14.1.
 
 ## 1. Context and Goals
 
@@ -61,7 +61,7 @@ flowchart TB
   PX["PayX"] --> GW["Exchange gateway<br/>Cloud-Waze / Bogie Gear<br/>health-checked routing"]
   GW --> API["Wire II API<br/>validate, convert, store, answer 202"]
   API -->|"conditional PutItem"| DB[("wire-ii-payment<br/>DynamoDB Global Table")]
-  DB -->|"DynamoDB Stream"| RL["Stream relay<br/>filter on relayTo and ownerRegion"]
+  DB -->|"DynamoDB Stream"| RL["Stream relay, no code<br/>EventBridge pipe, event bus, two rules"]
   RL -->|"UETR only"| SQ[["submit-q + DLQ"]]
   RL -->|"UETR only"| NQ[["notify-q + DLQ"]]
   SQ --> SUB["Submitter<br/>claim, detokenize, POST OPF"]
@@ -114,12 +114,14 @@ flowchart LR
 |---|---|---|---|
 | Wire II API | Validate, convert, store, answer 202; answer replays | ECS Fargate, as provisioned for `bank-wire-rail-ii-api` (Lambda is the alternative, §14) | No |
 | `wire-ii-payment` | The item for every payment and the index of unfinished work | DynamoDB Global Table | No, tokens only |
-| Stream relay | Turn a stream event into a queue message holding the UETR | One Lambda per region on the table's stream | No |
+| Stream relay | Turn a stream event into a queue message holding the UETR | One EventBridge pipe per region on the table's stream, a small event bus and two rules. No code | No |
 | submit-q, notify-q | Buffer and pace the work; each has a DLQ | SQS standard, per region | No, UETR only |
-| Submitter | Claim, detokenize, POST to OPF, write the outcome | Lambda, SQS trigger | Yes, in memory only |
-| Notifier | Tell PayX the outcome, mark the item notified | Lambda, SQS trigger | No |
-| Sweeper | Re-drive due items, end retries, vendor probe, takeover pass | Lambda, started by EventBridge Scheduler | No |
+| Submitter | Claim, detokenize, POST to OPF, write the outcome | Lambda (Go), SQS trigger | Yes, in memory only |
+| Notifier | Tell PayX the outcome, mark the item notified | Lambda (Go), SQS trigger | No |
+| Sweeper | Re-drive due items, end retries, vendor probe, takeover pass | Lambda (Go), started by EventBridge Scheduler | No |
 | `wire-ii-region-control` | Fence state, circuit breakers and sweeper heartbeat per region | Small DynamoDB Global Table | No |
+
+**Languages.** The API is Java on ECS Fargate and holds the conversion library. The three Lambdas are written in Go: Java is discouraged for Lambdas because of cold starts, and the team's Lambda templates are in Go. None of the Lambdas needs the conversion library, because the request is converted and stored by the API.
 
 ## 3. Request Lifecycle (Happy Path)
 
@@ -256,6 +258,10 @@ The breaker item, one per dependency and region (`controlKey` = `us-east-1#break
 | `failedUetrs` | set of UETRs | The different payments that failed in a row; the breaker opens on a count of these |
 | `openedAt`, `nextProbeAt` | ISO-8601 | When it opened and when the next probe is due |
 | `probeUetr` | UETR | The one payment allowed through while probing |
+| `probeStartedAt` | ISO-8601 | When the current probe was named. A probe older than the lease time has lapsed |
+| `probeInterval` | `4 min` | The current wait between probes. Doubles after a failed probe, up to 15 minutes; reset when the breaker closes |
+| `changedBy` | `submitter`, `sweeper` or a user id | Who made the last change, for the audit of manual actions |
+| `version` | N | Optimistic locking. Every change is a conditional write |
 
 The sweeper item, one per region (`controlKey` = `us-east-1#sweeper`):
 
@@ -263,6 +269,8 @@ The sweeper item, one per region (`controlKey` = `us-east-1#sweeper`):
 |---|---|---|
 | `heartbeatAt` | ISO-8601 | Written on every sweeper run. A stale value raises an alarm and is evidence for the evacuation runbook |
 | `runId`, `runUntil` | — | Ensures one run at a time per region |
+
+None of this changes the payment table. The breaker and the heartbeat are extra items in the control table. If the automatic takeover trigger of §8.11 is adopted, one more item is added (`controlKey` = `fence`, attribute `fencedRegion`), so that only one region can be fenced at a time.
 
 ## 5. State Machine
 
@@ -346,7 +354,25 @@ Compute: ECS Fargate, as already provisioned for the component. The existing `Pa
 
 ### 6.2 Stream relay
 
-One small Lambda per region on the table's DynamoDB Stream. It is the only reader of the stream. Event-source filter:
+The relay is configuration, not code. In each region:
+
+1. **One EventBridge pipe** reads the table's DynamoDB Stream. It is the only reader of the stream, which is what AWS recommends for a global table.
+2. The pipe's **filter** keeps only the events that must push (below).
+3. The pipe's **input transformer** reduces the event to `{ "uetr": ..., "relayTo": ... }` and sends it to a small **event bus** owned by Wire II.
+4. **Two rules** on the bus route it: `relayTo=SUBMIT` to submit-q, `relayTo=NOTIFY` to notify-q. Each rule's input transformer passes on only `{ "uetr": ... }`.
+
+```mermaid
+flowchart LR
+  ST["DynamoDB Stream<br/>of wire-ii-payment"] --> PIPE["EventBridge pipe<br/>filter and transformer"]
+  PIPE --> BUS["Wire II event bus"]
+  BUS -->|"rule: relayTo = SUBMIT"| SQ[["submit-q"]]
+  BUS -->|"rule: relayTo = NOTIFY"| NQ[["notify-q"]]
+  PIPE -.->|"after retries"| PD[["relay DLQ"]]
+```
+
+Why a bus sits between the pipe and the queues: a pipe has exactly one target, and there are two queues. Two pipes would put two readers on the stream. If the platform confirms that two readers are acceptable on this table, two pipes straight to the queues is the simpler variant (§15).
+
+Pipe filter:
 
 ```json
 { "eventName": ["INSERT", "MODIFY"],
@@ -355,7 +381,7 @@ One small Lambda per region on the table's DynamoDB Stream. It is the only reade
     "ownerRegion": { "S": ["us-east-1"] } } } }
 ```
 
-The function sends `{uetr}` to submit-q when `relayTo=SUBMIT` and to notify-q when `relayTo=NOTIFY`. Each region deploys its own region name in the filter.
+Each region deploys its own region name in the filter. The two rule patterns are `{ "detail": { "relayTo": ["SUBMIT"] } }` and the same with `NOTIFY`.
 
 `relayTo` is a push marker. Only these writes set it:
 
@@ -371,9 +397,12 @@ Every other write removes the marker: the claim, a put-back with backoff, the sw
 
 Settings:
 
-- Start from the oldest record still in the stream (`TRIM_HORIZON`), never from "now", so nothing is skipped while the mapping is created or updated. Old events are harmless: their claims fail.
-- A few retries, then an on-failure destination. One bad event must not block the events behind it. The sweeper covers what is dropped.
-- A stream may fold several changes to one item into one event. The relay acts on the marker in the latest image, and the sweeper covers a push that was folded away.
+- The pipe starts from the oldest record still in the stream (`TRIM_HORIZON`), never from "now", so nothing is skipped while it is created or updated. Old events are harmless: their claims fail.
+- The pipe retries a failing batch a few times, splits it to isolate a bad record, then sends that record to the relay's dead-letter queue. One bad event must not block the events behind it.
+- Each rule has its own retry policy and dead-letter queue, for a queue that cannot be reached.
+- The relay acts on the marker in the latest image. The sweeper covers anything the relay drops: a payment that was not pushed is queued when its `nextActionAt` passes.
+- The relay holds no business logic, so nothing in it changes when the Submitter or the Notifier changes.
+- Alarms: the pipe's iterator age, failed invocations of the rules, and messages in the relay's dead-letter queues.
 
 ### 6.3 Submitter (the only component that sees clear-text BANs)
 
@@ -411,6 +440,7 @@ Settings:
 8. Delete the SQS message. It is deleted in every handled case.
 ```
 
+- Compute: a Lambda written in Go, started by the SQS event source.
 - `LEASE` must exceed the full call time: Turing timeout + OPF timeout + write time. Example: 5 s + 20 s + margin, function timeout 45 s, lease 90 s. Explicit client timeouts are required (RE-5.4).
 - Timing rule: client timeouts add up to less than the function timeout; the function timeout is shorter than the lease; the queue visibility timeout is at least six times the function timeout.
 - SQS event-source `MaximumConcurrency` caps the request rate to Turing and OPF. Size it from OPF's rate limits. Reserved concurrency on the function, if set at all, is at or above that number: used as the limit, it throttles and throttled messages can be dropped.
@@ -419,7 +449,7 @@ Settings:
 
 ### 6.4 Notifier
 
-Calls the in-region PayX status API with Accepted, Rejected or Outcome unknown. On success it sets `payxNotifiedAt` and removes `sweepKey`, with the same owner and epoch condition as the submitter.
+Calls the in-region PayX status API with Accepted, Rejected or Outcome unknown. On success it sets `payxNotifiedAt` and removes `sweepKey`, with the same owner and epoch condition as the submitter. Compute: a Lambda written in Go, started by the SQS event source.
 
 - If the call fails, the notifier writes a later `nextActionAt`, raises `notifyAttempts` and deletes the message. The sweeper re-queues it when due. Waits: 1, 2, 5, 15 minutes, then every 15 minutes.
 - "Already recorded" from PayX counts as success. The status API must be idempotent on UETR.
@@ -430,14 +460,15 @@ Calls the in-region PayX status API with Accepted, Rejected or Outcome unknown. 
 
 ### 6.5 Sweeper
 
-An EventBridge Scheduler `rate(1 minute)` schedule in each region starts the sweeper Lambda. Scheduler delivers at least once, so the sweeper is built to be safe when it fires twice.
+An EventBridge Scheduler `rate(1 minute)` schedule in each region starts the sweeper Lambda, written in Go. Scheduler delivers at least once, so the sweeper is built to be safe when it fires twice.
 
 - **Heartbeat.** Each run writes `heartbeatAt` on its sweeper control item and takes the run lock. A second run that finds a live lock exits.
-- **Normal pass.** Query `sweep-idx` for each local `sweepKey` with `nextActionAt < now`, oldest first. For each item, first move `nextActionAt` forward with a condition on the value that was read, then enqueue the UETR to the right queue. Two runs can never both enqueue the same payment. This catches:
+- **Normal pass.** Query `sweep-idx` for each local `sweepKey` with `nextActionAt < now`, oldest first. For each item, first move `nextActionAt` forward by one SQS retry window (see below) with a condition on the value that was read, then enqueue the UETR to the right queue. Two runs can never both enqueue the same payment. This catches:
   - a stream event the relay dropped, or lost after the 24-hour Streams retention
   - expired leases (a crash mid-submit)
   - backoffs that have come due
   - missed notifications
+- **One live message per payment.** Once a message is on a queue, SQS delivers it up to five times by itself. Another message for the same payment in that time gains nothing and only adds failing work when the Submitter is broken. So when the sweeper queues a payment it moves `nextActionAt` ahead by one full **SQS retry window**: `maxReceiveCount` times the visibility timeout, plus a margin. With the proposed settings that is 25 minutes. The first look is the one exception: two minutes after acceptance, because the relay's push is not confirmed and a dropped push must not cost 25 minutes. The result: while the Submitter is failing, a payment has at most two messages in flight, and the sweeper adds one more only after SQS has given up on those.
 - **Deadline pass.** For an item whose `submitDeadline` has passed, or whose `attempts` reached the cap: wait for a live lease to end, then write `FAILED_TECHNICAL` with `NOT_SENT` if `unansweredAttempts` is 0, and `OUTCOME_UNKNOWN` otherwise. Alert. For `OUTCOME_UNKNOWN`, set `attentionKey` and `relayTo=NOTIFY` so that PayX is told. For `NOT_SENT`, remove `sweepKey`: nothing more is due until Arbiter replays.
 - **Breaker pass.** While a local breaker is open, pending payments are not re-queued. When a probe is due, name one payment as the probe and enqueue it. After the breaker closes, re-queue the waiting payments oldest first, a set number per run (§6.6).
 - **Takeover pass.** Active only while another region's control item says `state=FENCED` and `takeoverBy=<local>`. See §8.
@@ -449,11 +480,49 @@ The submitter's claim condition makes a duplicate enqueue harmless.
 
 One breaker item per dependency and region in `wire-ii-region-control`: OPF as seen from us-east-1, OPF as seen from us-west-2, and the same for Turing. A region can lose its route to OPF while the other still has one, so the two do not share a breaker.
 
+**Why a record and not a library inside the function.** A Lambda runs as many short-lived copies, in two regions, each with its own memory. A breaker held in memory would exist once per copy: one copy would stop calling OPF while the next keeps calling. The state therefore lives in the control table, where every copy reads the same value. The Submitter caches it for at most 10 seconds.
+
+```mermaid
+stateDiagram-v2
+  [*] --> CLOSED
+  CLOSED --> OPEN: Submitter, 5 different payments failed in a row
+  OPEN --> PROBING: Sweeper, nextProbeAt has passed, names one payment
+  PROBING --> CLOSED: Submitter, the probe got a clear answer from OPF
+  PROBING --> OPEN: Submitter, the probe failed, interval doubles
+  PROBING --> OPEN: Sweeper, the probe never reported back
+  CLOSED --> OPEN: operator, by hand
+  OPEN --> CLOSED: operator, by hand
+```
+
+| Who | Reads the breaker | Writes the breaker |
+|---|---|---|
+| Submitter | At the start of every invocation, before the claim (§6.3 step 0) | Adds a failing UETR to `failedUetrs`; empties the set after any clear answer; sets `OPEN` at the threshold; sets `CLOSED` or `OPEN` after a probe |
+| Sweeper | On every run | Sets `PROBING` with `probeUetr` when a probe is due; resets a probe that lapsed; paces the drain after closing |
+| Notifier | Not at all | Nothing. It does not call OPF |
+| Operator | Through the audited action | `OPEN` or `CLOSED` by hand |
+
+Every change is a conditional write on `version`. When several Submitters reach the threshold together, one write opens the breaker and the others find it already open. A clear answer includes a reject: a 400 or 422 proves that OPF is answering.
+
 - **Closed to open.** The submitter records each failing UETR on the breaker item. When a set number of *different* payments have failed in a row (5xx, timeout, 401, 403), it writes `OPEN` and pages. One payment that fails repeatedly does not open it.
 - **While open.** A submitter that receives a message reads the breaker first. It does not claim and does not write; it deletes the message. The item stays `PENDING_SUBMISSION` in the index. Nothing is written per payment while the dependency is down, and no attempts are burned. The API keeps accepting and storing payments.
 - **Probe.** Once per interval the sweeper moves the breaker to `PROBING`, names one payment as the probe and enqueues it. The submitter sends it like any other payment; the sweeper never calls OPF. Success closes the breaker. Failure reopens it with a longer interval, and the next probe is a different payment. A probe that never reports back lapses.
 - **Drain.** After closing, the sweeper re-queues the waiting payments oldest first at a set rate; the submit-q concurrency cap also protects OPF.
 - **Manual control.** Operations can open or close a breaker by hand. That action is restricted and audited, since it can stop every payment.
+
+**Why a probe and not a health check.** FIS exposes no health endpoint for the Universal Execution API. A connection test proves the network path and says nothing about whether OPF accepts payments. The only test that means something is one real payment. That is the probe: a payment that is waiting anyway, sent with its normal idempotency key. If OPF is back, that payment is simply done, and the breaker closes. Nothing else closes the breaker by itself.
+
+**Proposed values.** These are configuration, to be tuned with OPF's rate limit.
+
+| Setting | Proposed |
+|---|---|
+| Opens after | 5 different payments failing in a row |
+| First probe | 1 minute after opening |
+| Probe interval | Doubles after each failed probe: 1, 2, 4, 8 minutes, then every 15 minutes |
+| A probe that never reports back | Lapses after the lease time; the next sweeper run sends a new one |
+| Drain after closing | 60 payments per sweeper run, oldest first |
+| Opened or closed by hand | Allowed; restricted and audited |
+
+**At low volume the breaker may never open**, because several *different* payments must fail. Each payment then follows its own backoff (§11.1). The effect is the same: nothing is lost, and OPF is called at most a few times a minute.
 
 ```mermaid
 sequenceDiagram
@@ -491,7 +560,34 @@ Streams and SQS do different jobs. Streams is the trigger: it says "this item ch
 
 The takeover row matters most. When one region adopts the other's backlog, the burst of work goes through the same concurrency-capped queue as normal traffic, so OPF and Turing aren't flooded.
 
-**What the DLQ means in this design.** A payment that waits never burns queue receives, because the submitter deletes its message in every handled case. A message reaches the DLQ only when the function itself fails to finish it five times: a bug, a bad deploy, a missing permission. The DLQ is a signal for a person. The payment itself stays safe in the table and the sweeper still brings it to an outcome.
+**The DLQ and the sweeper: two paths, one payment.** A queue message is only a pointer to the item. The payment is never in the DLQ; it is in the table.
+
+1. **When a message reaches the DLQ.** Only when the function itself fails to finish it five times: a bug, a bad deploy, a missing permission. A payment that waits never burns receives, because the submitter deletes its message in every handled case.
+2. **What the sweeper does meanwhile.** The item is still unfinished. The sweeper looks once two minutes after acceptance, in case the push was lost, and puts a *new* message on the queue. After that it waits a full SQS retry window before it queues the payment again (§6.5), so it does not pile messages on a broken Submitter. While the fault lasts, each of its messages fails the same way and also ends in the DLQ.
+3. **When the fault is fixed.** The next message the sweeper queues is processed normally. No one has to move anything.
+4. **What is left in the DLQ.** Stale pointers, each only a UETR. Nothing reads the DLQ: not the Submitter, not the sweeper.
+5. **Nobody cleans it. It empties itself.** A DLQ keeps a message for 24 hours, counted from the moment the message was first created, and SQS then deletes it. No person purges it and no extra function is needed. The working queues keep messages for 12 hours; AWS advises that a DLQ keeps them longer than its source queue.
+6. **The alarm is on arrival, not on presence.** It fires when messages start arriving in a DLQ and clears by itself when they stop. It does not stay raised until someone empties the queue.
+7. **Whether the incident is over is read from the table, not from the DLQ.** The age of the oldest in-flight item returns to normal only when the stuck payments have really been processed. That is the signal that closes the incident.
+8. **For the review afterwards.** For 24 hours the DLQ still lists the UETRs that hit the fault, and the Submitter's error log has the cause.
+
+**One payment, with clock times.** The Submitter is broken from 09:55 and fixed at 10:25.
+
+| Time | What happens | On the item |
+|---|---|---|
+| 10:00 | The API stores the payment. The relay puts one message on submit-q. The Submitter crashes on it | `PENDING_SUBMISSION`, `attempts` 0, `nextActionAt` 10:02 |
+| 10:02 | The sweeper's first look: the payment is pending and due. It moves the time ahead and queues it once more, in case the first message was lost | `nextActionAt` 10:27 |
+| 10:04 to 10:18 | SQS hands the first message over four more times. Each try crashes. The sweeper leaves the payment alone | Unchanged |
+| 10:22 | Five tries are used up. SQS moves the message to the DLQ. The alarm fires | Unchanged. The item knows nothing about the DLQ |
+| 10:25 | The fix is deployed | Unchanged |
+| 10:27 | The retry window is over and the payment is still pending. The sweeper queues a fresh message. The Submitter claims the payment and sends it | `SUBMITTING`, then `OPF_ACCEPTED` |
+| after | No more messages arrive in the DLQ, so the alarm clears. SQS deletes the old messages 24 hours after they were created | Finished |
+
+The five tries are counted by SQS on the message, not on the item. The sweeper never reads the DLQ and never takes a message out of it.
+
+Options that were considered and not taken: a person purging the DLQ, which is a manual step that can be forgotten; a function that checks each DLQ message against the table and deletes it, which is more code to own for something SQS does by itself; and automatic re-drive to the source queue, which needs its own check that the Submitter is healthy again.
+
+So nothing is ever recovered *from* the DLQ. It tells a person that code or configuration is broken, and which UETRs hit it. If the fault outlasts a payment's deadline, the sweeper closes that payment as `NOT_SENT` (§11.4).
 
 **Simpler variant (not recommended for Platinum).** Drop the relay and SQS and let the stream Lambda call Turing and OPF directly, relying on the sweeper for recovery. This means fewer resources, but concurrency becomes shard-bound, a failing record blocks its shard, and takeover surges aren't throttled.
 
@@ -502,7 +598,7 @@ The takeover row matters most. When one region adopts the other's backlog, the b
 1. **New traffic and in-flight backlog fail over separately.** New PayX requests move automatically when Cloud-Waze / Bogie Gear marks the region unhealthy (RE-11.1). Both regions are already active, so new payments land in the healthy region within the health-check interval. Takeover covers only payments the failed region accepted but had not finished.
 2. **Ownership is data, not infrastructure.** Every in-flight item has an `ownerRegion` and `ownerEpoch`. Takeover is a conditional rewrite of those two attributes. The healthy region's relay starts acting on an item the moment its replica shows the new owner.
 3. **Fence first, then take over.** The failed region is told to stop before another region adopts its work. The fence is a replicated DynamoDB control item, so a partially alive region learns about it through the data plane with no control-plane access needed (OE-5.3).
-4. **Takeover is deliberate, not timer-driven.** It is triggered by the SmartOps E2E evacuation runbook (OE-3.2), not by a timer, so a backlog, a paused submitter or a brief blip never causes a takeover by accident. The sweeper heartbeat and the age of the oldest in-flight item are alarms that tell the operator when to run it.
+4. **Takeover is deliberate, not timer-driven.** It is triggered by the SmartOps E2E evacuation runbook (OE-3.2), not by a timer, so a backlog, a paused submitter or a brief blip never causes a takeover by accident. The sweeper heartbeat and the age of the oldest in-flight item are alarms that tell the operator when to run it. Whether the same sequence should later start by itself is discussed in §8.11.
 5. **Regions agree before they act.** Proposed table mode: DynamoDB multi-Region strong consistency (MRSC), with replicas in us-east-1 and us-west-2 and a witness in us-east-2. A write returns only after a second region holds it, and a conditional write is seen the same way by both regions.
 6. **OPF's idempotency key is the final safeguard.** Fencing and strong consistency make double processing very unlikely. Reusing the UETR as OPF's `idempotency-key`, with identical bytes, makes it harmless if it happens anyway.
 
@@ -614,7 +710,7 @@ A request that failed before the 202 was never accepted. PayX retries or Arbiter
 4. **Don't move items back.** In-flight items stay with west until they finish. East starts on new work only.
 5. **Re-enable** east's event-source mappings and schedule if they were disabled.
 6. **Return traffic.** Let Cloud-Waze restore active/active routing.
-7. **Purge** east's queues and DLQs of UETR-only messages left over from fencing. Their items are already owned and processed by west. Even without the purge they are harmless: each claim checks ownership and epoch.
+7. **No queue clean-up is needed.** UETR-only messages left in east's queues from before the fence are harmless: each claim checks ownership and epoch, and the queues empty themselves within their retention.
 
 ### 8.8 RTO Budget (placeholders — set per Resiliency Verification)
 
@@ -636,6 +732,8 @@ A request that failed before the 202 was never accepted. PayX retries or Arbiter
   - The same request sent to both regions at the same instant.
   - Arbiter replay during takeover.
   - Failback.
+  - Partial failure: block one region's route to OPF; verify the breaker, the alarm and the evacuation.
+  - Two identical repeats arriving at OPF together; and whether OPF's own duplicate checks stop a second payment.
 - **Component tests before go-live.** OPF mock failing for hours (breaker, probe, drain); OPF mock that accepts and then times out; relay switched off; queue purged; a poison message into the DLQ; a burst larger than the concurrency cap.
 - **Production:** enterprise Game Days and TREx using the SmartOps E2E evacuation runbook (OE-3.2, RE-12.1).
 
@@ -653,6 +751,32 @@ If the platform can only offer the eventually consistent mode (replicas in us-ea
 | Grace period | `LEASE + p99 ReplicationLatency` |
 | Failback | Wait until `ReplicationLatency` is normal and the east replica has caught up before unfencing |
 | Retention | TTL is available and can replace the scheduled purge |
+
+### 8.11 Partial Failures, and Automating the Takeover
+
+**A region that is alive but cannot send.** Example: a security group or proxy change stops one region's Submitter from reaching the partner gateway. That region still accepts payments, claims them and writes to the table; every call to OPF times out.
+
+- That region's OPF breaker opens once several different payments have failed. Its payments wait. The other region's breaker stays closed and it keeps working.
+- The alarm "breaker open in one region, closed in the other" names the situation exactly.
+- The region is evacuated with the same runbook: fence, grace period, takeover pass. Its waiting payments are sent by the other region.
+- New traffic can leave without a person: the API health check includes "this region's OPF breaker has been open for more than a set time while the other region's is closed", so routing moves new payments away.
+- The attempts that timed out count as unanswered, although nothing reached OPF. The resubmission from the other region resolves them.
+
+**Should the takeover start by itself?** The view in the design review was: ideally yes, once the conditions are thought through. With the strongly consistent table an automatic start is safe for correctness, because the fence and every ownership change are seen the same way by both regions; a takeover that was not needed only moves work. The risk is operational: moving a backlog because of a blip.
+
+Proposed path:
+
+1. **Go live with the runbook.** A person starts it; the alarms tell them when.
+2. **Then automate the trigger, not the sequence.** The healthy region's sweeper writes the fence itself when all of these hold for a set time (proposed: 10 minutes):
+   - the other region's sweeper heartbeat is stale, or its OPF breaker is open while this region's is closed;
+   - the other region has overdue in-flight payments;
+   - this region's own breakers are closed and it is not fenced.
+
+   Everything after the fence is unchanged: grace period, paced takeover pass, failback by a person.
+3. **One fence at a time.** The fence is taken with a conditional write on a single control item, so two regions can never fence each other.
+4. **Limits.** A payment is taken over a limited number of times, then escalated to a person. Operations can switch the automatic trigger off.
+
+An automatic start is not proposed under the eventually consistent fallback (§8.10). There, a region that is cut off looks the same as one that is dead.
 
 ## 9. HSHD / BAN Handling (CY-5.4)
 
@@ -677,11 +801,12 @@ If the platform can only offer the eventually consistent mode (replicas in us-ea
 - **Alerts per region (OE-4.1, Tier 0):**
   - oldest in-flight item age (sweeper query on `sweep-idx`) — the one alarm that catches every stuck case
   - SQS `ApproximateAgeOfOldestMessage` for both queues
-  - DLQ depth > 0
-  - relay iterator age on the stream
+  - messages arriving in a DLQ (clears by itself; a DLQ empties itself within 24 hours)
+  - relay: pipe iterator age, failed rule invocations, relay DLQ depth
   - sweeper heartbeat missing
   - items the sweeper had to start (the push path is broken)
   - breaker open, by dependency
+  - breaker open in one region while closed in the other (a partial regional failure)
   - items in `SUBMITTING` past `leaseExpiresAt`
   - `FAILED_TECHNICAL` count, by reason
   - PayX status API failures
@@ -696,7 +821,7 @@ If the platform can only offer the eventually consistent mode (replicas in us-ea
 
 - **Inside one attempt:** one immediate retry only when the request provably never left, such as a refused connection. A timeout or a 5xx is never retried at once.
 - **Between attempts:** the submitter puts the item back to `PENDING_SUBMISSION` with a later `nextActionAt` and deletes the queue message. The sweeper re-queues the item when it is due.
-- **The clock.** `nextActionAt` is set two minutes ahead at acceptance, to the end of the lease at a claim, to the backoff time after an attempt without a clear answer, and to now when an outcome is written. The sweeper acts only on items whose time has passed.
+- **The clock.** `nextActionAt` is set two minutes ahead at acceptance, to the end of the lease at a claim, to the backoff time after an attempt without a clear answer, one SQS retry window ahead when the sweeper queues the item, and to now when an outcome is written. The sweeper acts only on items whose time has passed.
 - **The counts.** `attempts` and `unansweredAttempts` both rise at the claim. `unansweredAttempts` is taken back when the attempt ends with a clear answer, or with proof that nothing was sent. After a timeout, a 5xx or a crash it stays. A submitter that dies mid-call therefore leaves its attempt counted as unanswered.
 
 ```mermaid
@@ -824,6 +949,73 @@ A person checks OPF, then records the truth through an audited action: accepted 
 
 **Go-live gate.** Wire II repeats a request with the same key by design, after a crash or an unclear result. It must not go live until FIS has confirmed in writing how OPF treats such a repeat, and until that has been tested in the FIS sandbox with two repeats arriving at the same time. A mock cannot prove it.
 
+### 11.7 FIS Down for Hours: a Worked Example
+
+OPF is a vendor system and Wire II cannot shorten its outage. The goal is that an outage of hours costs delay and nothing else. Example: OPF stops answering at 13:00 and returns at 17:00. The values are the proposed ones from §6.6.
+
+| Time | What happens | State |
+|---|---|---|
+| 13:00 | OPF starts timing out. Payments in flight end without a clear answer and are put back with backoff | A few payments carry an unanswered attempt |
+| 13:01 to 13:02 | Five different payments have failed in a row. The breaker opens and pages | Breaker `OPEN` |
+| from 13:02 | The API keeps answering 202. New payments are stored as `PENDING_SUBMISSION`. The relay pushes each once; the Submitter sees the open breaker, deletes the message and does not claim | **The queues stay empty. The backlog is in the table** |
+| 13:03, 13:05, 13:09, 13:17, then every 15 minutes | The sweeper lets one probe payment through each time. Each fails. The next probe is a different payment | About 19 probes in four hours |
+| any time | A payment whose `submitDeadline` passes, for example at its cut-off, is closed: `NOT_SENT` if it was never attempted, `OUTCOME_UNKNOWN` if an attempt went out | Some payments may fail on time, not on OPF |
+| 17:00 | OPF is back | |
+| by 17:15 | The next probe gets 202. The breaker closes | Breaker `CLOSED` |
+| from 17:15 | The sweeper re-queues the backlog oldest first, 60 per run. The submit-q concurrency cap limits the call rate | Backlog ÷ 60 minutes to drain |
+| after | Payments that carried an unanswered attempt are resent with the same key and bytes. If OPF had taken the first request, it answers with that result | Depends on OPF replay semantics (§15) |
+
+What this costs, and what it does not:
+
+- **Writes during the outage:** none per waiting payment. Only the probes and the breaker item are written.
+- **Calls to OPF during the outage:** one per probe interval.
+- **Unanswered attempts:** each probe that times out leaves one payment with an unanswered attempt. Probes rotate, so no single payment collects them.
+- **Noticing the recovery:** at most one probe interval, 15 minutes at the longest. A person can close the breaker by hand sooner if FIS confirms the recovery.
+- **PayX side:** Arbiter may replay during the outage. The API answers 202 with the current status and changes nothing.
+- **Limit:** a payment waits only until its `submitDeadline`. The deadline value, and whether a payment may wait past its cut-off, are product decisions (§15).
+
+### 11.8 Failure Mode and Effects Analysis (FMEA)
+
+Asked for in the architecture review. One row per failure point. Severity is the effect on a payment if the automatic response did not exist: **High** means money could move twice or a payment could be lost, **Medium** means payments are delayed, **Low** means no effect on payments.
+
+| # | Component | Failure mode | Effect | Detected by | Automatic response | Operator action | Severity | What remains |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Wire II API | Down in one region | New requests fail there | Routing health check | Routing sends requests to the other region | None | Low | Nothing |
+| 2 | Wire II API | Cannot write to the table | No payment is accepted in that region | 503 rate; health check | Answers 503; the region leaves routing; PayX retries | Find the cause | Medium | Nothing is stored, nothing is lost |
+| 3 | Wire II API | Crashes after the write, before the 202 | PayX does not know the payment was accepted | PayX timeout | PayX retries; the API answers with the current status | None | Low | Nothing |
+| 4 | `wire-ii-payment` | A region cannot reach a second region | That region cannot write: no accept, no claim | Write errors; health check | The region stops by itself; the other carries on | Evacuate if it lasts | Medium | The fallback mode behaves differently (§8.10) |
+| 5 | `wire-ii-payment` | Writes throttled, or an index partition is hot | Slow accepts and claims | Throttle metrics; write latency | Retries; the index is sharded | Raise capacity | Medium | Nothing |
+| 6 | `wire-ii-payment` | KMS key disabled | Table and queues of the region stop | Access-denied errors | Treated as a region failure | Restore the key, or evacuate | Medium | Nothing |
+| 7 | Stream relay, pipe | Stopped, or not publishing | Payments are not pushed | Pipe iterator age; "items the sweeper had to start" | The sweeper queues each payment after its grace | Fix the pipe | Medium | Up to two minutes more per payment |
+| 8 | Stream relay, pipe | Filter wrong after a change | Nothing is pushed, or everything is | Same; queue depth | The sweeper covers "nothing"; the claim makes "everything" harmless | Fix the filter | Medium | Nothing |
+| 9 | Stream relay, rule | Cannot deliver to a queue | One queue gets no messages | Failed invocations; relay DLQ | The rule retries, then its DLQ; the sweeper covers | Fix the rule or the queue. Nothing to clean up | Medium | Delay |
+| 10 | submit-q, notify-q | Message lost, or queue purged | The pointer to the work is gone | Oldest in-flight age | The sweeper re-queues from the table | None | Low | Delay |
+| 11 | submit-q | Poison message, or the Submitter cannot run: bug, bad deploy, missing permission | Messages fail five times and go to the DLQ | Messages arriving in the DLQ; oldest in-flight age | The sweeper re-queues after each SQS retry window; payments wait in the table; the DLQ empties itself | Fix the code. Nothing to clean up | Medium | Payments wait until the fix, or until their deadline |
+| 12 | Submitter | Crashes mid-call | OPF may hold a payment that the item does not show | Item in `SUBMITTING` past its lease | Redelivery and sweeper; same key, same bytes | None | High | Depends on OPF replay semantics; go-live gate |
+| 13 | Submitter | Stalls, then wakes after its lease | Could send late, or write a stale result | Not needed | Checks the remaining lease before sending; a stale write fails its condition | None | High | Nothing |
+| 14 | Submitter | Throttled, or concurrency used up | Slower submissions | Queue age | Messages wait; the cap is on the event source | Raise the cap if OPF allows | Low | Nothing |
+| 15 | Submitter, one region | **Cannot reach OPF from this region** (security group, proxy, route) while the region is otherwise healthy | Every call from this region times out; items are still updated | Breaker open here and closed in the other region; timeout rate | This region's breaker opens; its payments wait; the other region keeps working | Evacuate the region by runbook (§8.11), then fix the network | Medium | The timed-out attempts count as unanswered though nothing reached OPF; resolved on resubmission |
+| 16 | Turing | Down or slow | Payments cannot be detokenized | Error rate; Turing breaker | The Turing breaker opens; payments wait without attempts | Contact the Turing team | Medium | Payments wait until their deadline |
+| 17 | Turing | One value cannot be detokenized | That payment cannot be sent | Turing code | `REJECTED` and an alert | Look into the token | Low | Nothing |
+| 18 | OPF API | 5xx or timeout on some calls | Unknown whether OPF took them | Error rate | No immediate retry; backoff; same key | None | High | Depends on OPF replay semantics |
+| 19 | OPF API | Down for hours | No payment can be sent | Breaker open; oldest in-flight age | Breaker, probe, paced drain (§11.7) | Contact FIS; may close the breaker by hand | Medium | Payments past their deadline fail |
+| 20 | OPF API | Rejects our credentials or set-up (401, 403) | No payment is accepted | The same answer for several payments | The breaker opens and pages; no payment is failed | Fix the credentials or the set-up | Medium | Payments wait |
+| 21 | OPF API | Accepts a repeat as a new payment | The money moves twice | Reconciliation; OPF's duplicate checks | None possible inside Wire II beyond same key, same bytes and a deadline inside the key window | Stop; check with FIS | High | **Must be ruled out with FIS before go-live** |
+| 22 | OPF API | Slow, close to the timeout | Leases run close to expiry | Latency alarm | Client timeouts below the function timeout below the lease; remaining-lease check | Tune the timeouts | Medium | Nothing |
+| 23 | Notifier, PayX status API | PayX cannot be reached | PayX does not learn the outcome | Callback failure rate | Backoff; the sweeper re-queues; a PayX replay returns the status | Contact PayX | Medium | Delay |
+| 24 | PayX status API | Refuses permanently | The outcome is never delivered by callback | Alert | Retries stop | Look into it with PayX | Medium | The outcome is still returned on a replay |
+| 25 | Sweeper | Not running | No recovery, no deadline, no probe | Heartbeat missing; oldest in-flight age | The push path still works | Restart; check the schedule | Medium | Stuck payments wait |
+| 26 | Sweeper, Scheduler | Fires twice, or runs overlap | Could queue a payment twice | Not needed | Run lock; conditional move of `nextActionAt` | None | Low | Nothing |
+| 27 | `wire-ii-region-control` | Cannot be read | Fence and breaker state unknown | Read errors | Treated as fenced and open: nothing is sent | Find the cause | Medium | Payments wait |
+| 28 | Region | Whole region down | Its in-flight payments stop | Routing health check; heartbeat; oldest in-flight age | New traffic moves by itself | Run the evacuation runbook | Medium | Up to the RTO of §8.8 |
+| 29 | Region | Cut off from the others, still running | Could act on stale data | Write errors | It cannot write, so it cannot accept, claim or send | Evacuate | High | The fallback mode relies on fence and grace period |
+| 30 | Deploy | Bad release of a Lambda | As row 11 | DLQ; error rate | Payments wait in the table | Roll back | Medium | Nothing |
+| 31 | Deploy | The conversion changes | Waiting payments could be sent with different bytes | Not needed | The converted request is stored at acceptance | None | High | Nothing |
+| 32 | Credentials | OPF or Turing token expired | Calls fail with 401 | 401 rate | Refresh once and retry in place | Rotate if the refresh fails | Low | Nothing |
+| 33 | Operations | Table restored from a backup | Old pending items look current | Runbook | Sweeper, relay and notifier stay off | Reconcile first | High | Runbook step |
+
+The seven High rows are 12, 13, 18, 21, 29, 31 and 33. Five are closed by the design. Rows 12 and 18 depend on one answer from FIS, and row 21 is the reason for the go-live gate.
+
 ## 12. Configuration That Matters
 
 These are the settings where a wrong value causes an incident.
@@ -832,12 +1024,12 @@ These are the settings where a wrong value causes an incident.
 |---|---|---|
 | Wire II API | ECS Fargate behind the Exchange gateway | Health check includes "can write to the table" and "region is not fenced". A region that cannot write is taken out of routing |
 | `wire-ii-payment` | DynamoDB Global Table, MRSC: replicas in us-east-1 and us-west-2, witness in us-east-2 | Streams on both replicas with new and old images; the view type cannot be changed later. Point-in-time recovery and deletion protection. The table must be empty when it is converted to this mode |
-| Stream relay | Lambda, DynamoDB Streams event source, one per region | The only reader on the stream. Filter on `relayTo` and `ownerRegion`. Start at `TRIM_HORIZON`. A few retries, then an on-failure destination |
-| submit-q, notify-q | SQS standard, each with a DLQ | Visibility timeout at least six times the function timeout. `maxReceiveCount` at least 5. Not FIFO: it adds blocking and no benefit here |
-| Submitter, Notifier | Lambda, SQS event source | Batch size 1 or partial batch responses. `MaximumConcurrency` on the event source. Client timeouts < function timeout < lease < visibility timeout. Proxy route to OPF and Turing |
-| Sweeper | Lambda, started by EventBridge Scheduler `rate(1 minute)`, one schedule per region | Delivered at least once: one run at a time, and `nextActionAt` moved with a condition before queueing. Heartbeat on every run. Time budget and count per run |
+| Stream relay | EventBridge pipe on the DynamoDB Stream, a Wire II event bus and two rules, per region. No code | The pipe is the only reader on the stream. Filter on `relayTo` and `ownerRegion`. Start at `TRIM_HORIZON`. Bounded retries, batch splitting, a dead-letter queue on the pipe and on each rule |
+| submit-q, notify-q | SQS standard, each with a DLQ | Visibility timeout at least six times the function timeout. `maxReceiveCount` at least 5. Not FIFO: it adds blocking and no benefit here. Retention 12 hours on the working queues and 24 hours on each DLQ, so a DLQ empties itself. Alarm when messages arrive in a DLQ; it clears by itself (§7) |
+| Submitter, Notifier | Lambda (Go), SQS event source | Batch size 1 or partial batch responses. `MaximumConcurrency` on the event source. Client timeouts < function timeout < lease < visibility timeout. Proxy route to OPF and Turing |
+| Sweeper | Lambda (Go), started by EventBridge Scheduler `rate(1 minute)`, one schedule per region | Delivered at least once: one run at a time, and `nextActionAt` moved with a condition before queueing, by one SQS retry window (proposed 25 minutes; 2 minutes for the first look after acceptance). Heartbeat on every run. Time budget and count per run |
 | `wire-ii-region-control` | Small DynamoDB Global Table, same mode as the payment table | Read by every component, cached at most 10 s. Writes restricted and audited |
-| Retention | Scheduled purge (MRSC has no TTL) | Removes the two payloads of finished items older than the retention period and leaves a small tombstone: UETR, hashes, final status and OPF reference. A UETR that was ever used is recognized for good |
+| Retention of finished payments | Scheduled purge of the table, once a day (MRSC has no TTL). Unrelated to purging a DLQ | Removes the two payloads of finished items older than the retention period and leaves a small tombstone: UETR, hashes, final status and OPF reference. A UETR that was ever used is recognized for good |
 | Alarms | CloudWatch | The list in §10 |
 
 **Deploying.** The item carries a schema version. Code that reads a new field is deployed before code that writes it. A change to the conversion never touches payments already accepted, since their request is stored.
@@ -882,14 +1074,30 @@ The architecture of the initial draft is kept. These are the points where this d
 | 12 | Retention | `ttl` | Scheduled purge that leaves a tombstone | MRSC has no TTL, and a purged UETR must still be recognized when a late replay arrives |
 | 13 | Sweeper | Runs every 1–2 minutes | One run at a time, conditional move of `nextActionAt` before queueing, heartbeat, backlog check | The schedule can fire twice; two runs must not both enqueue a payment |
 | 14 | Control table | Fence state per region | Also holds the breakers and the sweeper heartbeat | One small table for everything a component reads before acting |
-| 15 | API compute | Lambda (Java 21 + SnapStart), per PE-1.2 | ECS Fargate, as already provisioned for the component | The component and its pipeline exist. Lambda remains an option if PE-1.2 is to be followed for the API as well |
+| 15 | API compute | Lambda (Java 21 + SnapStart), per PE-1.2 | ECS Fargate, as already provisioned for the component | The component and its pipeline exist, and Java is discouraged for Lambdas because of cold starts. Lambda remains an option if PE-1.2 is to be followed for the API as well |
 | 16 | Stored payload | `pain001Tokenized` | `pain001Tokenized` and the original `paymentObject` | Later channels convert from the original (§13) |
+
+### 14.1 Changes After the Review of 17 November 2026
+
+| Point raised in the review | Change | Section |
+|---|---|---|
+| Use EventBridge Pipes for the relay, to avoid a Lambda | The relay is one pipe, an event bus and two rules per region. No code | 2, 6.2, 12 |
+| Java is discouraged for Lambdas | Submitter, Notifier and Sweeper are written in Go. The Java conversion stays in the API | 2, 6.3 to 6.5 |
+| What closes the breaker, without a call to the OPF API? | Nothing can: there is no health endpoint. One real payment is the probe. Values proposed | 6.6 |
+| How do the DLQ and the sweeper interact? | Written out as two paths for one payment | 7 |
+| What if FIS is down for hours? | Worked example with timings | 11.7 |
+| Failure mode and effects analysis | Added, 33 rows by component | 11.8 |
+| Partial regional failures, such as one region unable to reach the partner gateway | Per-region breaker, a dedicated alarm, evacuation; FMEA row 15 | 8.11, 11.8 |
+| Should takeover be automated? | A path is proposed: runbook at go-live, then an automatic trigger with guard conditions. The decision is open | 8.11, 15 |
+| Would OPF's duplicate checks stop a second payment? | Added to the questions for FIS and to the tests | 8.9, 15 |
+| Who cleans the dead-letter queue? (raised after the review) | Nobody. It empties itself after 24 hours; the alarm is on arrival; whether the incident is over is read from the table | 7, 12 |
+| While SQS is still retrying a message, should the sweeper add another? (raised after the review) | No. One live message per payment: after queueing, the sweeper waits a full SQS retry window | 6.5, 7 |
 
 ## 15. Open Questions / Confirm Before Build
 
 **FIS / OPF**
 
-1. **OPF replay semantics.** Does a repeat call with the same `idempotency-key` and an identical payload return 202 again? Capability 10 documents only 422 for a *different* payload. Crash recovery (§11.3) and gray-failure safety (§8.5) depend on the answer. This is the go-live gate of §11.6.
+1. **OPF replay semantics.** Does a repeat call with the same `idempotency-key` and an identical payload return 202 again? Capability 10 documents only 422 for a *different* payload. Crash recovery (§11.3) and gray-failure safety (§8.5) depend on the answer. This is the go-live gate of §11.6. Also: if a repeat were ever accepted as a second payment, would OPF's own duplicate checks stop it?
 2. **When is a key recorded:** when the request arrives, or when it completes? What comes back for a repeat while the first is still in progress?
 3. **How long is a key remembered?** It bounds `submitDeadline`.
 4. **Error codes** that tell an invalid message from a key conflict. Does the 202 carry a reference? Is there any way to ask OPF about one payment by UETR?
@@ -906,7 +1114,7 @@ The architecture of the initial draft is kept. These are the points where this d
 **Platform**
 
 11. **Strong consistency.** Is the MRSC mode, with a witness region, available through the provisioning template, with customer-managed keys and point-in-time recovery?
-12. **Lambda and EventBridge Scheduler** approved for this component, and the SQS event-source `MaximumConcurrency` settable through the pipeline.
+12. **EventBridge Pipes** is confirmed as an approved service. Open: how a pipe, an event bus and its rules are deployed through the pipeline; whether two readers on the stream would be accepted, in which case two pipes replace the bus; EventBridge Scheduler and the SQS event-source `MaximumConcurrency` through the pipeline.
 13. **Turing** must be active/active, with regional Exchange endpoints in both regions (RE-10.3).
 14. **Egress** from a Lambda to OPF and Turing: proxy route and secrets. Does the route open the encrypted traffic?
 
@@ -918,6 +1126,7 @@ The architecture of the initial draft is kept. These are the points where this d
 
 16. **ADR update.** If adopted, Capability 10 / ADR-0003 must record the reversal of the "no SQS, inline" decision, and the PayX contract change (202 on the inbound call, final status via the notifier).
 17. The choices in §14, in particular rows 1, 3, 6 and 15.
+18. **Takeover trigger.** Runbook only, or the automatic trigger of §8.11 once the game days have shown that its conditions are reliable.
 
 ## 16. References
 
@@ -929,9 +1138,10 @@ The architecture of the initial draft is kept. These are the points where this d
 - Information Security Standard 2701.1.001 (CY-5.5); HSHD Procedure (CY-5.4).
 - Support: `#architecture-governance`, `#resiliency-verification`, `#smartops`.
 
-**AWS facts this design relies on** (checked against the AWS documentation on 14 and 16 November 2026):
+**AWS facts this design relies on** (checked against the AWS documentation on 14, 16 and 18 November 2026):
 
 - *DynamoDB global tables.* The eventually consistent mode resolves conflicting writes by last-writer-wins for the whole item, and a conditional write is checked only against the local replica. The strongly consistent mode replicates a write to at least one other region before it returns and gives a recovery point of zero; a colliding write fails with a conflict error; a region that cannot reach a second region cannot write. It needs exactly three regions, as three replicas or two replicas and a witness; in the US the set is N. Virginia, Ohio and Oregon. Streams and global secondary indexes are supported in that mode; TTL, transactions and local secondary indexes are not. The table must be empty when it is converted.
 - *DynamoDB Streams.* A stream keeps records for 24 hours and cannot deliver to SQS by itself. No more than two readers per shard, and one is recommended for a global table. The view type cannot be changed after the stream is created. An event filter matches fixed values and cannot compare the old and new image.
-- *SQS and Lambda.* Delay on send is at most 15 minutes; retention is at most 14 days. The SQS event source has its own maximum concurrency, from 2 upward; with reserved concurrency instead, throttled messages are retried until the visibility timeout passes and can then be dropped. AWS recommends a visibility timeout of at least six times the function timeout. The same message can reach the function more than once, and failures can be reported per message.
+- *SQS and Lambda.* Delay on send is at most 15 minutes; retention is at most 14 days. In a standard queue a message expires by its original enqueue time, which does not change when it moves to a dead-letter queue; AWS advises a longer retention on the dead-letter queue than on its source. The SQS event source has its own maximum concurrency, from 2 upward; with reserved concurrency instead, throttled messages are retried until the visibility timeout passes and can then be dropped. AWS recommends a visibility timeout of at least six times the function timeout. The same message can reach the function more than once, and failures can be reported per message.
+- *EventBridge Pipes.* A pipe connects one source to one target. A DynamoDB stream is a supported source, with a filter on the event and an input transformer; SQS and an EventBridge event bus are supported targets. An event bus fans out to several targets through rules. For a global table AWS recommends one simultaneous reader on the stream; two are supported for single-Region tables only.
 - *EventBridge Scheduler* delivers at least once.
