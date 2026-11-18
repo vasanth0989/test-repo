@@ -373,6 +373,12 @@ Replace the single merged row with two rows.
 
 ---
 
+## Second pass
+
+Four more fixes found afterwards are in a separate file, `adr-update-second-pass-four-fixes.md`. Nothing in this file changed because of them.
+
+---
+
 ## Build pieces, for story creation
 
 **Capability 10: Wire II API**
