@@ -74,14 +74,20 @@ The rest of the panel is unchanged.
 | Dispatch (managed) | 3 |
 | Wire II Submitter (Fargate) | 3 |
 
-**Move to Capability 3** (cut from this page; they are in the Capability 3 page below):
-- the block "Submission path — Wire II Submitter", steps 1 to 6;
-- the sentence "The Submitter can run as an ECS service that scales on queue depth or as a Lambda with an SQS trigger; the contract is the same.";
-- section 6.3 OPF response mapping, with its warning panel;
-- section 6.4 Turing detokenize response handling.
+**Delete four pieces from this page.** You do not need to copy them anywhere: the Capability 3 page further down in this file already contains all four, ready to paste.
 
-**In their place, add one line**
+| # | What to delete on the Capability 10 page | Where it starts | Where it ends |
+|---|---|---|---|
+| 1 | The block headed "Submission path — Wire II Submitter" | The bold heading "Submission path — Wire II Submitter" | The end of step 6 ("...the record is marked PARKED, with an alert.") |
+| 2 | One sentence at the end of section 6 | "The Submitter can run as an ECS service..." | "...the contract is the same." |
+| 3 | Section 6.3 | The heading "6.3 OPF response mapping" | The end of the yellow warning panel about 422 |
+| 4 | Section 6.4 | The heading "6.4 Turing detokenize response handling" | The last row of its table ("500") |
+
+**Then type this one line where piece 1 was**, so a reader of Capability 10 knows where the text went:
+
 > Submission, the OPF response mapping and the Turing response handling are in [Capability 3 (Submit Request to OPF API)].
+
+Sections 6.1 and 6.2 keep their numbers. Section 6.3 and 6.4 no longer exist on this page, and section 7 follows 6.2.
 
 The blocks "Request path", "Dispatch" and "Recovery path" stay on this page.
 
@@ -114,7 +120,7 @@ The blocks "Request path", "Dispatch" and "Recovery path" stay on this page.
 
 ### 8.4 Dispatch and retry, 8.5 Wire II Submitter runtime
 
-**Move both sections to Capability 3.** Leave one line here:
+**Delete both sections from this page.** The Capability 3 page below already contains them (its sections 5 and 6). Leave one line here:
 > Dispatch, retry and the Submitter runtime are in [Capability 3 (Submit Request to OPF API)]. The recovery sweep row of that table is described in 8.3 above.
 
 ### 8.6 Regional failover and auto-heal: add one bullet after "The replication-lag window"
@@ -208,7 +214,7 @@ The blocks "Request path", "Dispatch" and "Recovery path" stay on this page.
 
 ## Capability 3 (Submit Request to OPF API) - ADR-0003: full page
 
-Replace the whole page with the text below. Sections marked "moved" are the current Capability 10 text, unchanged except where noted.
+Replace the whole page with the text below. It is complete: nothing has to be copied over from Capability 10 by hand. Sections marked "moved" are the current Capability 10 text, unchanged except where noted.
 
 > **Status:** Proposed — 2026-11-18. **Scope:** Phase 1 (transitional; retired at the full OPF exit in Phase 2). **ASV:** ASVWIREII. **Parent decision:** [ADR-0003].
 > Capability 3 covers dispatch and submission: the managed dispatch (DynamoDB stream, EventBridge Pipe, SQS) and the **Wire II Submitter**, which detokenizes the BAN values, submits the stored pain.001 to OPF and reports the final status to PayX. It is the second half of one design; the first half, the **Wire II API**, is [Capability 10 (Wire II — pain.001 generation)].
@@ -253,10 +259,21 @@ Replace the whole page with the text below. Sections marked "moved" are the curr
 > | 500 / 503 / timeout | FAILED_RETRYABLE; counts toward the circuit breaker | Nothing yet — redelivered after backoff, or held while the breaker is open | none until a terminal outcome |
 > | Maximum receives reached | PARKED (alert), reason `MAX_RECEIVES` | Nothing yet — an operator replay revives it | none until a terminal outcome |
 >
-> Keep the existing warning panel about 422 below this table, unchanged.
+> Warning panel, below this table: A 422 should be impossible on a genuine replay, because the stored payload is re-sent byte for byte and a rebuilt payload is deterministic. Any 422 therefore signals a defect or a reused UETR, and raises an alert.
 >
-> ### 4.2 Turing detokenize response handling (moved)
-> Move section 6.4 of Capability 10 here as it is, with its table. One addition to the rows for 203 code 109, 401 / 403 and 500: "counts toward the Turing circuit breaker".
+> ### 4.2 Turing detokenize response handling (moved; three rows extended)
+> Read against Turing's documented error codes for 203, rather than one blanket policy. "Retryable" means the message is redelivered after backoff.
+>
+> | Turing response | Outcome | Treatment |
+> |---|---|---|
+> | 200 | Success — clear-text value returned | Proceed to the OPF submission |
+> | 203, code 105 (ID parameter length exceeds limit) | Malformed request construction | Block submission; non-retryable; alert — this is a Wire II defect, not a transient issue |
+> | 203, code 106 (VALUE parameter invalid/out of range) | The stored token value itself is malformed | Block submission; non-retryable; alert — indicates a bad token upstream of this call |
+> | 203, code 108 (token parameter invalid) | Not a valid Turing token | Block submission; non-retryable; alert — cannot detokenize what isn't a token |
+> | 203, code 109 (lookup database internal error) | Transient backend lookup failure | Retryable — same bucket as Turing/OPF 500; counts toward the Turing circuit breaker |
+> | 400 | Bad request (malformed call) | Block submission; non-retryable; alert — same bucket as OPF 400 |
+> | 401 / 403 | Unauthorized / client not entitled | Technical failure; alert — same bucket as OPF 401/403; counts toward the Turing circuit breaker |
+> | 500 | Turing backend error | Technical failure, retryable — same bucket as OPF 500/503; counts toward the Turing circuit breaker |
 >
 > ### 5. Dispatch and retry (moved; three rows changed)
 > | Layer | Owner | Trigger | Proposed starting values |
@@ -275,7 +292,10 @@ Replace the whole page with the text below. Sections marked "moved" are the curr
 > **The DLQ and the sweeper.** A queue message is only a pointer; the payment is in the table. SQS redelivery handles normal retries. The sweeper acts only after the stall threshold, which is longer than the longest backoff, so the two never race. A message in the DLQ means a defect or a payment that failed for two hours while others succeeded; the record is PARKED and an operator replays the record, not the message.
 >
 > ### 6. Wire II Submitter runtime (moved)
-> Move section 8.5 of Capability 10 here as it is.
+> - Consumer concurrency is the back-pressure limit on Turing and OPF; bursts wait in the queue.
+> - Scales on queue depth and the age of the oldest message, independently of the API.
+> - On deploy or scale-in, tasks stop receiving on SIGTERM and finish in-flight attempts within the stop timeout. An attempt that is cut off leaves its message to reappear and its lease to expire.
+> - Holds the only clear-text BAN, in memory, and has no DynamoDB permissions.
 >
 > ### 7. Security and least privilege
 > | Identity | Allowed | Not allowed |
