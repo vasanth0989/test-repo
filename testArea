@@ -1,22 +1,19 @@
-**Story: [Cap 10] Add pain.001 V9 output to bank-wire-object-mapper behind a version argument**
-Points: 5 · Sprint 26.4.6
+**Subject: BillPay Scaled Wave Cleanup Approaches – Alignment Needed**
 
-Description
+Hi Team,
 
-As a developer of a service that needs pain.001, I want bank-wire-object-mapper to produce version 9 as well as version 11 from the same payment object, so that the OFAC screening service and Wire II use one library and one set of mapping rules.
+Ahead of the **December 11 dry run**, I’ve summarized the three approaches for handling the Segment 3 and closed-account populations:
 
-The library builds pain.001.001.11 today. This story adds pain.001.001.09 as a second output. The caller chooses the version with an argument; without it the library produces version 11, so existing callers do not change. Version 9 gets its own MapStruct mapper and its own classes generated from the version 9 schema. The rules for parties, agents, accounts and addresses are written once and used by both versions, because both versions use the same types for them. The party rules agreed in the mapping review go into that shared code: the debtor agent comes from the payer's bank and never from the on-behalf-of payer; the accounts of the debtor agent, the creditor agent and the intermediary agents are mapped; the initiating party is the one given, otherwise the payer. The branch is shared with the developers of the existing version 9 mapping, who test it with the OFAC service.
+**Option A – Driver File Approach**  
+Discover provides a driver file of approximately **100k–150k eligible records**, excluding Segment 3 and closed accounts. FIS generates the deconversion file from this population and unenrolls the remaining customers during migration weekend / MD+1. **This requires FIS agreement on the driver file approach and BAU exclusions.**
 
-Not in this story: the FIS JSON rendering, which exists for version 11 only; the FX trade details; and retiring the other version 9 mapper once this one is adopted.
+**Option B – FIS Cleanup Before the Dry Run**  
+Discover provides the cleanup population, and FIS completes unenrollment before generating the deconversion file. The file contains only the remaining customers and may fall below the approximately 150k target. **Business approval is required because customer unenrollment occurs before migration.**
 
-Acceptance criteria
+**Option C – In-House Cleanup Through FIS APIs**  
+Discover performs cleanup for an estimated **200k–210k accounts** across approximately **15 nightly execution windows**, completing it before December 11. FIS then generates the deconversion file from the remaining population. **This requires business approval and confirmation of API throughput and nightly capacity.**
 
-- [ ] The entry point takes a version argument; without it the output is version 11 and every existing test passes unchanged; an unknown version is refused with a clear message
-- [ ] With version 9 the library returns a pain.001.001.09 document that is valid against the version 9 schema, for a customer transfer, a bank transfer, a transfer with intermediaries and a drawdown
-- [ ] Version 9 has its own MapStruct mapper and generated classes; the party, agent, account and address rules are one shared implementation used by both versions
-- [ ] The debtor agent is taken from the payer's bank in both versions, and the on-behalf-of payer never feeds it
-- [ ] The accounts of the debtor agent, the creditor agent and the intermediary agents are mapped in both versions
-- [ ] The initiating party is mapped when given; otherwise the payer is used
-- [ ] Identification numbers of the ultimate debtor and ultimate creditor, the clearing code with its scheme, bank-to-bank information and remittance information are present in both versions for the samples
-- [ ] The version 9 output is compared with the existing version 9 mapping for the same sample payments, and every difference is listed as accepted or fixed
-- [ ] The README shows how to choose the version, the branch is shared, and a new library version is published
+Please review these options so I can coordinate the agreed approach with FIS and the business stakeholders. Population counts and execution estimates remain subject to confirmation.
+
+Thanks,  
+[Your Name]
