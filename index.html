@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The page may not talk to any server: no scripts, styles, images or requests from anywhere else. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Paste a Base64 payload and read it as formatted JSON. Runs in your browser; nothing is uploaded.">
+<title>Base64 to JSON</title>
+<style>
+  :root {
+    --ink: #14213d; --paper: #eef2f6; --panel: #ffffff; --line: #cfd8e3; --muted: #5b6b82;
+    --tape: #f7c948; --key: #14213d; --str: #1f7a8c; --num: #7b2d5b; --lit: #a15c00; --punct: #8794a8; --bad: #b3261e; --good: #1f6f4a;
+    --display: Bahnschrift, "DIN Alternate", "Avenir Next Condensed", "Roboto Condensed", "Arial Narrow", sans-serif;
+    --body: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Code", "Cascadia Mono", "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e6ecf5; --paper: #0f1830; --panel: #16223f; --line: #2b3a5c; --muted: #9aa9c2; --key: #e6ecf5; --str: #6fd0de; --num: #e59ac6; --lit: #f2c063; --punct: #7483a0; --bad: #ff8a80; --good: #7ad9a8; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--body); display: grid; grid-template-rows: auto auto 1fr auto; min-height: 100vh; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--tape); outline-offset: 2px; }
+
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 20px 28px 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font: 700 34px/1 var(--display); font-stretch: 75%; letter-spacing: 0.01em; text-transform: uppercase; }
+  h1 span { display: inline-block; margin: 0 0.18em; color: var(--muted); font-weight: 400; transform: translateY(-0.04em); }
+  .promise { margin: 0; font-size: 13.5px; color: var(--muted); max-width: 52ch; text-align: right; }
+  .promise b { color: var(--ink); font-weight: 600; }
+
+  /* the tape: the first characters of the input as holes, six bits to a character */
+  .strip { display: grid; grid-template-columns: minmax(0, auto) 1fr; gap: 18px; align-items: center; padding: 0 28px 14px; }
+  .tape { background: var(--tape); border-radius: 3px; padding: 5px 8px; line-height: 0; max-width: 100%; overflow: hidden; }
+  .tape svg { display: block; height: 44px; width: auto; max-width: 100%; }
+  .tape circle { fill: #14213d; } .tape circle.off { fill: #14213d; opacity: 0.13; }
+  .trail { display: flex; flex-wrap: wrap; gap: 6px 6px; align-items: center; min-height: 28px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+  .trail li { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+  .trail li.lead { border: 0; background: none; padding-left: 0; color: var(--muted); font: 600 12px var(--display); font-stretch: 85%; letter-spacing: 0.08em; text-transform: uppercase; }
+  .trail li.end { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .trail li.err { border-color: var(--bad); color: var(--bad); }
+  @media (prefers-reduced-motion: no-preference) { .trail li.in { animation: chip 0.22s ease-out both; } @keyframes chip { from { opacity: 0; transform: translateX(-6px); } } }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; padding: 0 28px; min-height: 0; }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; display: grid; grid-template-rows: auto 1fr; min-height: 0; overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .bar h2 { margin: 0 auto 0 0; font: 700 13px var(--display); font-stretch: 85%; letter-spacing: 0.1em; text-transform: uppercase; }
+  .bar h2 small { font: 400 12.5px var(--body); letter-spacing: 0; text-transform: none; color: var(--muted); margin-left: 8px; }
+  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 7px; padding: 4px 11px; font-size: 13.5px; cursor: pointer; }
+  .btn:hover:not(:disabled) { border-color: var(--ink); } .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.main { background: var(--ink); color: var(--paper); border-color: var(--ink); font-weight: 600; }
+  .opt { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .opt select { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 3px 4px; }
+
+  textarea { width: 100%; height: 100%; min-height: 240px; resize: none; border: 0; outline: 0; background: transparent; padding: 14px; font: 13px/1.55 var(--mono); word-break: break-all; }
+  textarea::placeholder { color: var(--muted); font-family: var(--body); font-size: 14.5px; word-break: normal; }
+  .pane.drop { border-color: var(--tape); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tape) 45%, transparent); }
+
+  .out { overflow: auto; min-height: 240px; }
+  .json { margin: 0; padding: 12px 0; font: 13px/1.6 var(--mono); counter-reset: ln; tab-size: 4; }
+  .json .l { display: block; white-space: pre; padding: 0 16px 0 0; counter-increment: ln; }
+  .json .l::before { content: counter(ln); display: inline-block; width: 4.2ch; margin-right: 14px; text-align: right; color: var(--punct); user-select: none; -webkit-user-select: none; }
+  .json.wrap .l { white-space: pre-wrap; word-break: break-word; padding-left: calc(4.2ch + 14px); text-indent: calc(-4.2ch - 14px); }
+  .k { color: var(--key); font-weight: 600; } .s { color: var(--str); } .n { color: var(--num); } .b { color: var(--lit); } .p { color: var(--punct); }
+  .was { margin-left: 10px; padding: 0 7px; border-radius: 999px; background: var(--tape); color: #14213d; font: 600 11px var(--body); user-select: none; -webkit-user-select: none; }
+  .say { padding: 26px 22px; color: var(--muted); max-width: 56ch; }
+  .say strong { display: block; color: var(--ink); font: 700 20px/1.2 var(--display); font-stretch: 85%; margin-bottom: 6px; }
+  .say.bad strong { color: var(--bad); }
+  .say code { font: 13px var(--mono); background: var(--paper); border-radius: 4px; padding: 1px 5px; color: var(--ink); word-break: break-all; }
+  .say pre { font: 13px/1.5 var(--mono); background: var(--paper); border-radius: 6px; padding: 10px 12px; overflow: auto; color: var(--ink); max-height: 40vh; white-space: pre-wrap; word-break: break-all; }
+
+  footer { padding: 12px 28px 16px; font-size: 12.5px; color: var(--muted); display: flex; gap: 18px; flex-wrap: wrap; }
+  footer span b { color: var(--ink); font-weight: 600; }
+  @media (max-width: 860px) {
+    header { padding: 16px 16px 10px; } .promise { text-align: left; } .strip { grid-template-columns: 1fr; padding: 0 16px 12px; gap: 8px; }
+    main { grid-template-columns: 1fr; padding: 0 16px; } textarea { min-height: 180px; } footer { padding: 12px 16px 16px; } h1 { font-size: 28px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Base64 <span aria-hidden="true">&rarr;</span><span class="sr" style="position:absolute;left:-9999px">to</span> JSON</h1>
+  <p class="promise"><b>Runs in your browser.</b> Nothing you paste is uploaded, stored or logged: this page is not allowed to make any network request.</p>
+</header>
+
+<div class="strip">
+  <div class="tape" title="The first characters of your input as punched tape: one column per Base64 character, six bits each"><svg id="tape" role="img" aria-label="The first characters of the input as punched tape, six bits per character"></svg></div>
+  <ol class="trail" id="trail" aria-live="polite"></ol>
+</div>
+
+<main>
+  <section class="pane" id="inPane" aria-labelledby="inTitle">
+    <div class="bar">
+      <h2 id="inTitle">Encoded <small id="inSize"></small></h2>
+      <button class="btn" id="sample" type="button">Try a sample</button>
+      <button class="btn" id="clear" type="button" disabled>Clear</button>
+    </div>
+    <textarea id="in" spellcheck="false" autocomplete="off" autocapitalize="off" aria-labelledby="inTitle"
+      placeholder="Paste a Base64 payload here, or drop a text file.&#10;&#10;Standard and URL-safe Base64 both work, with or without padding, quotes, line breaks or a data: prefix. A JSON envelope with a Base64 value inside works too."></textarea>
+  </section>
+
+  <section class="pane" aria-labelledby="outTitle">
+    <div class="bar">
+      <h2 id="outTitle">JSON <small id="outSize"></small></h2>
+      <label class="opt"><input type="checkbox" id="open" checked> Open encoded values inside</label>
+      <label class="opt"><input type="checkbox" id="wrap"> Wrap</label>
+      <label class="opt">Indent <select id="indent"><option value="2">2 spaces</option><option value="4">4 spaces</option><option value="tab">Tab</option></select></label>
+      <button class="btn" id="download" type="button" disabled>Download</button>
+      <button class="btn main" id="copy" type="button" disabled>Copy JSON</button>
+    </div>
+    <div class="out" id="out" tabindex="0" aria-labelledby="outTitle"></div>
+  </section>
+</main>
+
+<footer>
+  <span><b>Exact numbers.</b> Long ids and amounts are shown digit for digit, never rounded.</span>
+  <span><b>Reads gzip.</b> A compressed payload is opened before it is formatted.</span>
+  <span><b>Works offline.</b> Save the page and use it without a connection.</span>
+</footer>
+
+<script>
+/*CORE*/
+// Everything that turns text into JSON. No page, no network: it can be run and tested on its own.
+const Core = (() => {
+  const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const utf8 = new TextDecoder('utf-8', { fatal: true });
+  const looksJson = (t) => { const c = t.trimStart()[0]; return c === '{' || c === '['; };
+
+  // Tidy what was pasted into plain Base64, and say what had to be done.
+  function clean(input) {
+    let t = String(input).trim(); const steps = [];
+    if (t.length > 1 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) { t = t.slice(1, -1); steps.push('Quotes removed'); }
+    const pre = /^data:[^,]*;base64,/i.exec(t); if (pre) { t = t.slice(pre[0].length); steps.push('data: prefix removed'); }
+    if (/\\[nrt]/.test(t)) { t = t.replace(/\\[nrt]/g, ''); steps.push('Written-out line breaks removed'); }
+    if (/\s/.test(t)) { t = t.replace(/\s+/g, ''); steps.push('Line breaks and spaces removed'); }
+    if (/[-_]/.test(t)) { t = t.replace(/-/g, '+').replace(/_/g, '/'); steps.push('URL-safe alphabet'); }
+    const padded = /=+$/.test(t); t = t.replace(/=+$/, '');
+    const bad = /[^A-Za-z0-9+/]/.exec(t);
+    if (bad) return { error: { title: 'This is not Base64', detail: 'The character ' + JSON.stringify(bad[0]) + ' at position ' + (bad.index + 1) + ' is not part of the Base64 alphabet (A to Z, a to z, 0 to 9, + and /, or - and _).' } };
+    if (!t.length) return { error: { title: 'There is nothing to decode', detail: 'Only padding or punctuation was pasted.' } };
+    if (t.length % 4 === 1) return { error: { title: 'The Base64 is cut off', detail: 'Its length (' + t.length + ' characters) cannot be right: one character is missing or was added. Check that the whole value was copied.' } };
+    const pad = (4 - (t.length % 4)) % 4; if (pad && !padded) steps.push('Padding added');
+    return { b64: t + '='.repeat(pad), steps };
+  }
+  function toBytes(b64) { const bin = atob(b64); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+  function packing(bytes) { if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) return 'gzip'; if (bytes.length > 2 && bytes[0] === 0x78 && [0x01, 0x5e, 0x9c, 0xda].includes(bytes[1])) return 'deflate'; return null; }
+  async function unpack(bytes, kind) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open ' + kind + ' data.');
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(kind));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  // A JSON reader that keeps every number exactly as written, so long ids and amounts are never rounded.
+  function parse(text) {
+    let i = 0; const n = text.length;
+    const fail = (msg) => { const e = new Error(msg); e.at = i; throw e; };
+    const ws = () => { while (i < n && (text[i] === ' ' || text[i] === '\n' || text[i] === '\r' || text[i] === '\t')) i++; };
+    const NUM = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+    function string() {
+      const start = i; i++;
+      while (i < n) {
+        const c = text[i];
+        if (c === '\\') { i += 2; continue; }
+        if (c === '"') { i++; const raw = text.slice(start, i); try { return { t: 'str', raw, v: JSON.parse(raw) }; } catch { i = start; fail('This text value has a wrong escape sequence'); } }
+        if (c < ' ') fail('A line break or control character sits inside a text value');
+        i++;
+      }
+      i = start; fail('This text value is never closed with a double quote');
+    }
+    function value(depth) {
+      if (depth > 400) fail('The JSON is nested too deeply');
+      ws(); const c = text[i];
+      if (c === '{') {
+        i++; const items = []; ws(); if (text[i] === '}') { i++; return { t: 'obj', items }; }
+        for (;;) {
+          ws(); if (text[i] !== '"') fail(i >= n ? 'The JSON ends before this object is closed' : 'A name in double quotes is expected here');
+          const k = string(); ws(); if (text[i] !== ':') fail('A colon is expected after the name ' + k.raw); i++;
+          items.push([k, value(depth + 1)]); ws();
+          if (text[i] === ',') { i++; continue; } if (text[i] === '}') { i++; return { t: 'obj', items }; }
+          fail(i >= n ? 'The JSON ends before this object is closed' : 'A comma or a closing brace is expected here');
+        }
+      }
+      if (c === '[') {
+        i++; const items = []; ws(); if (text[i] === ']') { i++; return { t: 'arr', items }; }
+        for (;;) {
+          items.push(value(depth + 1)); ws();
+          if (text[i] === ',') { i++; continue; } if (text[i] === ']') { i++; return { t: 'arr', items }; }
+          fail(i >= n ? 'The JSON ends before this list is closed' : 'A comma or a closing bracket is expected here');
+        }
+      }
+      if (c === '"') return string();
+      if (c === '-' || (c >= '0' && c <= '9')) { NUM.lastIndex = i; const m = NUM.exec(text); if (!m) fail('This is not a valid number'); i += m[0].length; return { t: 'num', raw: m[0] }; }
+      for (const lit of ['true', 'false', 'null']) if (text.startsWith(lit, i)) { i += lit.length; return { t: 'lit', raw: lit }; }
+      fail(i >= n ? 'The JSON ends too early' : 'The character ' + JSON.stringify(c) + ' is not expected here');
+    }
+    const root = value(0); ws(); if (i < n) fail('There is more text after the end of the JSON');
+    return root;
+  }
+  function where(text, at) { const before = text.slice(0, at); const line = before.split('\n').length; const col = at - before.lastIndexOf('\n'); const from = Math.max(0, at - 60); return { line, col, near: text.slice(from, Math.min(text.length, at + 40)).replace(/\s+/g, ' '), mark: Math.min(at, text.length) - from }; }
+
+  // A text value that is itself JSON, written out or as Base64, is opened in place.
+  function open(node, stats, depth) {
+    if (node.t === 'obj') { for (const pair of node.items) pair[1] = open(pair[1], stats, depth); return node; }
+    if (node.t === 'arr') { node.items = node.items.map((x) => open(x, stats, depth)); return node; }
+    if (node.t !== 'str' || depth > 6) return node;
+    const v = node.v;
+    if (v.length > 1 && looksJson(v)) { try { const inner = parse(v); inner.was = 'text'; stats.text++; return open(inner, stats, depth + 1); } catch { return node; } }
+    if (v.length >= 16 && /^[A-Za-z0-9+/_-]+={0,2}$/.test(v)) {
+      const c = clean(v); if (c.error) return node;
+      try { const inner = utf8.decode(toBytes(c.b64)); if (!looksJson(inner)) return node; const tree = parse(inner); tree.was = 'Base64'; stats.b64++; return open(tree, stats, depth + 1); } catch { return node; }
+    }
+    return node;
+  }
+
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // The tree as lines: plain text to copy, and the same lines with colour to read.
+  function print(root, unit) {
+    const text = []; const html = []; let count = { keys: 0, values: 0 };
+    const put = (level, t, h) => { text.push(unit.repeat(level) + t); html.push(esc(unit.repeat(level)) + h); };
+    const leaf = (node) => (node.t === 'str' ? ['s', node.raw] : node.t === 'num' ? ['n', node.raw] : ['b', node.raw]);
+    const tag = (node) => (node.was ? '<span class="was">was ' + (node.was === 'Base64' ? 'Base64' : 'JSON in text') + '</span>' : '');
+    function walk(node, level, lead, leadHtml, tail) {
+      const comma = tail ? ',' : ''; const commaH = tail ? '<span class="p">,</span>' : '';
+      if (node.t === 'obj' || node.t === 'arr') {
+        const [a, z] = node.t === 'obj' ? ['{', '}'] : ['[', ']'];
+        if (!node.items.length) { put(level, lead + a + z + comma, leadHtml + '<span class="p">' + a + z + '</span>' + commaH + tag(node)); return; }
+        put(level, lead + a, leadHtml + '<span class="p">' + a + '</span>' + tag(node));
+        node.items.forEach((item, idx) => {
+          const more = idx < node.items.length - 1;
+          if (node.t === 'obj') { count.keys++; walk(item[1], level + 1, item[0].raw + ': ', '<span class="k">' + esc(item[0].raw) + '</span><span class="p">: </span>', more); }
+          else walk(item, level + 1, '', '', more);
+        });
+        put(level, z + comma, '<span class="p">' + z + '</span>' + commaH);
+        return;
+      }
+      count.values++; const [cls, raw] = leaf(node);
+      put(level, lead + raw + comma, leadHtml + '<span class="' + cls + '">' + esc(raw) + '</span>' + commaH);
+    }
+    walk(root, 0, '', '', false);
+    return { text: text.join('\n'), lines: html, keys: count.keys, values: count.values };
+  }
+
+  // From whatever was pasted to formatted JSON, with the list of what it took.
+  async function decode(input, opt) {
+    const raw = String(input); if (!raw.trim()) return { empty: true };
+    const steps = []; let text; let bytes = 0;
+    if (looksJson(raw)) { text = raw; steps.push('Already JSON'); }
+    else {
+      let cur = raw;
+      for (let round = 0; round < 4; round++) {
+        const c = clean(cur); if (c.error) { if (round === 0) return { error: c.error, steps }; break; }
+        if (round === 0) steps.push(...c.steps); else steps.push('Encoded ' + (round === 1 ? 'twice' : (round + 1) + ' times') + ': decoded again');
+        let data; try { data = toBytes(c.b64); } catch { if (round === 0) return { error: { title: 'This is not Base64', detail: 'The value could not be decoded.' }, steps }; break; }
+        if (round === 0) bytes = data.length;
+        const kind = packing(data);
+        if (kind) { try { data = await unpack(data, kind); steps.push((kind === 'gzip' ? 'gzip' : 'zlib') + ' opened'); } catch (e) { return { error: { title: 'The compressed data could not be opened', detail: String(e.message || e) }, steps, bytes }; } }
+        let str; try { str = utf8.decode(data); } catch { if (round > 0) break; return { error: { title: 'It decodes, but not to text', detail: 'The ' + data.length + ' decoded bytes are not UTF-8 text, so they cannot be JSON. First bytes: ' + Array.from(data.slice(0, 16), (b) => b.toString(16).padStart(2, '0')).join(' ') }, steps, bytes }; }
+        if (round === 0) steps.push('UTF-8 text');
+        text = str; if (looksJson(str)) break;
+        const again = str.trim(); if (again.length >= 16 && /^["']?[A-Za-z0-9+/_\-\s]+={0,2}["']?$/.test(again)) { cur = again; continue; }
+        break;
+      }
+    }
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    let tree;
+    try { tree = parse(text); } catch (e) {
+      const w = where(text, e.at == null ? 0 : e.at);
+      return { notJson: { title: looksJson(text) ? 'The JSON is broken' : 'It decodes, but it is not JSON', detail: looksJson(text) ? e.message + ' (line ' + w.line + ', column ' + w.col + ').' : 'The decoded text does not start with { or [. It is shown below as it is.', near: looksJson(text) ? w : null }, text, steps, bytes };
+    }
+    const stats = { text: 0, b64: 0 };
+    if (opt.open) { tree = open(tree, stats, 0); if (stats.b64) steps.push(stats.b64 + ' Base64 value' + (stats.b64 > 1 ? 's' : '') + ' opened inside'); if (stats.text) steps.push(stats.text + ' JSON text value' + (stats.text > 1 ? 's' : '') + ' opened inside'); }
+    const out = print(tree, opt.unit);
+    return { ok: true, steps, bytes, text: out.text, lines: out.lines, keys: out.keys, values: out.values };
+  }
+  // The first characters as six-bit columns, for the tape.
+  function bits(input, max) { const c = looksJson(String(input)) ? { error: 1 } : clean(input); if (c.error || !c.b64) return []; return Array.from(c.b64.replace(/=+$/, '').slice(0, max), (ch) => ALPHABET.indexOf(ch)); }
+  return { clean, toBytes, parse, open, print, decode, bits };
+})();
+/*END CORE*/
+
+// ---------------------------------------------------------------- the page
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const input = $('in'); const out = $('out'); const trail = $('trail'); const tape = $('tape');
+  const COLS = 64; let last = null; let run = 0;
+
+  function drawTape(values) {
+    const step = 7; const w = COLS * step + 4; const h = 6 * step + 2; let s = '';
+    for (let c = 0; c < COLS; c++) { const v = values[c]; for (let r = 0; r < 6; r++) { const on = v != null && v >= 0 && ((v >> (5 - r)) & 1); s += '<circle cx="' + (c * step + 5) + '" cy="' + (r * step + 4.5) + '" r="' + (on ? 2.5 : 1.3) + '"' + (on ? '' : ' class="off"') + '/>'; } }
+    tape.setAttribute('viewBox', '0 0 ' + w + ' ' + h); tape.innerHTML = s;
+  }
+  function chips(list) {
+    trail.replaceChildren(...list.map(([text, cls], i) => { const li = document.createElement('li'); li.textContent = text; li.className = (cls || '') + ' in'; li.style.animationDelay = (i * 45) + 'ms'; return li; }));
+  }
+  const num = (n) => n.toLocaleString('en-US');
+  function say(title, detail, extra, bad) {
+    const box = document.createElement('div'); box.className = 'say' + (bad ? ' bad' : '');
+    const t = document.createElement('strong'); t.textContent = title; const p = document.createElement('p'); p.textContent = detail; p.style.margin = '0'; box.append(t, p);
+    if (extra) box.append(extra); out.replaceChildren(box);
+  }
+  function ready(on) { $('copy').disabled = !on; $('download').disabled = !on; }
+
+  async function update() {
+    const mine = ++run; const value = input.value;
+    $('clear').disabled = !value; $('inSize').textContent = value ? num(value.length) + ' characters' : '';
+    drawTape(Core.bits(value, COLS));
+    const unit = $('indent').value === 'tab' ? '\t' : ' '.repeat(Number($('indent').value));
+    const r = await Core.decode(value, { open: $('open').checked, unit });
+    if (mine !== run) return;           // something newer was typed while this one was being read
+    last = null; ready(false); $('outSize').textContent = '';
+    if (r.empty) { trail.replaceChildren(); say('Nothing to read yet', 'Paste a Base64 payload on the left. Its JSON appears here, formatted and ready to copy.'); return; }
+    const steps = [['What it took', 'lead'], ...r.steps.map((s) => [s])];
+    if (r.error) { chips([...steps, [r.error.title, 'err']]); say(r.error.title, r.error.detail, null, true); return; }
+    if (r.notJson) {
+      chips([...steps, [r.notJson.title, 'err']]);
+      const pre = document.createElement('pre');
+      if (r.notJson.near) { const w = r.notJson.near; pre.append(w.near.slice(0, w.mark)); const m = document.createElement('mark'); m.textContent = w.near.slice(w.mark, w.mark + 1) || ' '; pre.append(m, w.near.slice(w.mark + 1)); }
+      else pre.textContent = r.text.length > 20000 ? r.text.slice(0, 20000) + '\n…' : r.text;
+      say(r.notJson.title, r.notJson.detail, pre, true); return;
+    }
+    chips([...steps, ['JSON: ' + num(r.keys) + ' name' + (r.keys === 1 ? '' : 's') + ', ' + num(r.lines.length) + ' line' + (r.lines.length === 1 ? '' : 's'), 'end']]);
+    const pre = document.createElement('pre'); pre.className = 'json' + ($('wrap').checked ? ' wrap' : '');
+    pre.innerHTML = r.lines.map((l) => '<span class="l">' + l + '</span>').join('');
+    out.replaceChildren(pre); out.scrollTop = 0;
+    $('outSize').textContent = num(r.lines.length) + ' lines' + (r.bytes ? ' from ' + num(r.bytes) + ' bytes' : '');
+    last = r.text; ready(true);
+  }
+  let timer = null; const soon = () => { clearTimeout(timer); timer = setTimeout(update, 90); };
+  input.addEventListener('input', soon);
+  for (const id of ['open', 'indent']) $(id).addEventListener('change', update);
+  $('wrap').addEventListener('change', () => { const pre = out.querySelector('.json'); if (pre) pre.classList.toggle('wrap', $('wrap').checked); });
+  $('clear').addEventListener('click', () => { input.value = ''; update(); input.focus(); });
+  $('sample').addEventListener('click', () => {
+    // a made-up message: an envelope whose "payload" is itself Base64, sent URL-safe and without padding
+    const enc = (o) => btoa(String.fromCharCode(...new TextEncoder().encode(typeof o === 'string' ? o : JSON.stringify(o))));
+    const inner = '{"orderId":9007199254740993123,"amount":1250.00,"currency":"USD","lines":[{"sku":"A-100","qty":2},{"sku":"B-220","qty":1}],"note":"Deliver after 5pm"}';
+    const envelope = '{"messageId":"0b6f2c1e-58a4-4d1b-9c57-2f1e7a9d4c10","createdAt":"2026-01-15T09:30:00Z","attempt":1,"payload":"' + enc(inner) + '","settings":"{\\"retry\\":true,\\"limit\\":3}"}';
+    input.value = enc(envelope).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); update();
+  });
+  async function copy() {
+    if (last == null) return; const b = $('copy');
+    try { await navigator.clipboard.writeText(last); }
+    catch { const t = document.createElement('textarea'); t.value = last; t.style.position = 'fixed'; t.style.opacity = '0'; document.body.append(t); t.select(); try { document.execCommand('copy'); } finally { t.remove(); } }
+    b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy JSON'; }, 1300);
+  }
+  $('copy').addEventListener('click', copy);
+  $('download').addEventListener('click', () => { if (last == null) return; const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([last + '\n'], { type: 'application/json' })); a.download = 'payload.json'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); });
+  const pane = $('inPane');
+  pane.addEventListener('dragover', (e) => { e.preventDefault(); pane.classList.add('drop'); });
+  pane.addEventListener('dragleave', () => pane.classList.remove('drop'));
+  pane.addEventListener('drop', async (e) => { e.preventDefault(); pane.classList.remove('drop'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; const text = f ? await f.text() : e.dataTransfer.getData('text'); if (text) { input.value = text; update(); } });
+  window.B64 = { update, Core };
+  update();
+})();
+</script>
+</body>
+</html>
