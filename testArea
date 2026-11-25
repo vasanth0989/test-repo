@@ -1,19 +1,22 @@
-**Subject: BillPay Scaled Wave Cleanup Approaches – Alignment Needed**
+## Summary
 
-Hi Team,
+**pain.001.001.11 mapping**
+- `DbtrAgtAcct` is now mapped from the payer bank's account number
+- `InitgPty` uses the payer when the payload names no initiating party (`HeaderRules.initiatingPartyFallback`, default `PAYER`)
+- The field that fills `UETR` is chosen by rule (`IdentifierRules.uetrSource`)
+- `PayloadPreconditions` checks the charge bearer when it is present
+- Golden XML samples refreshed for the above
 
-Ahead of the **December 11 dry run**, I’ve summarized the three approaches for handling the Segment 3 and closed-account populations:
+**XML to FIS JSON (new package `fis`)**
+- `FisJsonConverter` turns the pain.001.001.11 message into the FIS request JSON in memory, after checking it against the XSD
+- JSON names come from `pain001-v11-fis-names.json`, built from the XSD and the FIS contract by the `generateFisNameTable` task
+- `WirePaymentFisJson` goes from the Base64 payment object to the FIS JSON in one call
+- A failure throws `FisJsonConversionException` with every problem listed; no partial message is returned
+- Output is deterministic: same input, same bytes
+- `build.gradle`: adds `jackson-databind`, `json-schema-validator` (tests only) and the tasks `renderFisJson` and `generateFisNameTable`
 
-**Option A – Driver File Approach**  
-Discover provides a driver file of approximately **100k–150k eligible records**, excluding Segment 3 and closed accounts. FIS generates the deconversion file from this population and unenrolls the remaining customers during migration weekend / MD+1. **This requires FIS agreement on the driver file approach and BAU exclusions.**
 
-**Option B – FIS Cleanup Before the Dry Run**  
-Discover provides the cleanup population, and FIS completes unenrollment before generating the deconversion file. The file contains only the remaining customers and may fall below the approximately 150k target. **Business approval is required because customer unenrollment occurs before migration.**
-
-**Option C – In-House Cleanup Through FIS APIs**  
-Discover performs cleanup for an estimated **200k–210k accounts** across approximately **15 nightly execution windows**, completing it before December 11. FIS then generates the deconversion file from the remaining population. **This requires business approval and confirmation of API throughput and nightly capacity.**
-
-Please review these options so I can coordinate the agreed approach with FIS and the business stakeholders. Population counts and execution estimates remain subject to confirmation.
-
-Thanks,  
-[Your Name]
+- [x] `./gradlew test` passes (122 tests)
+- [x] Golden JSON of all 8 samples validates against the FIS contract
+- [x] FIS's own sample requests convert back to the same JSON
+- [x] `./gradlew renderFisJson` writes the samples to `build/samples/fis-json`
