@@ -30,3 +30,36 @@ Tejaswi
 Team impediments
 - ENTPMTS-146048: escalate to Kiran if it is not cleared by Wednesday.
 - The integration test of ENTPMTS-143580 through the service waits for the service and its API onboarding. It moved out of that story.
+
+Standup context for 2026-11-24. Use it with Jira and GitHub for today's plan.
+
+Sprint
+- Sprint ends tomorrow, Wednesday 2026-11-25.
+- Kaushik P is out today.
+
+Vasanth
+- Primary: XML to FIS JSON conversion (ENTPMTS-143562). Implementation is done, unit tests remain. Target done today.
+- Secondary: review Kaushik P's field-level validation before it is accepted. Check that the mapping file from Monday's office hour and Kaushik Ravichandran's comments are reflected.
+- Secondary: list the stories for the next sprint and bring it to Wednesday's standup.
+- Done: demo of the wire mapping app (payload to pain.001 version 11 and version 9, then to the FIS JSON). One link is broken; fix it and share the GitHub link.
+- Note: the mapper library is done. Other work can use it from a local jar, so it blocks nobody.
+- Impediments: none.
+
+Kaushik P (out)
+- ENTPMTS-143580: he showed a record inserted into DynamoDB on Monday. Add screenshots of the inserts from the AWS console, then the story can be accepted.
+- Field-level validation: In Review, waiting for Vasanth's review.
+- Bank Wire Rail II API approval: about 10 comments addressed, still not approved.
+
+Tejaswi
+- Primary: clone the spike as a story and close it, so the 3 points count.
+- Secondary: Okta and sign-on story. FIS was emailed about the user groups on their side. Update the acceptance criteria to what is done, close it, and create a linked follow-up story.
+- Impediment: Jira lets nobody accept a spike; it can only be cancelled. From now on use a story with "Spike" in the title.
+- Impediment: no FIS answer expected this week (holiday).
+
+Next sprint (candidates)
+- Create the Submitter service repository and use the mapper library in it (Tejaswi).
+- Onboard the Submitter service API to DevExchange (Kaushik P).
+
+Team impediments
+- Bank Wire Rail II API approval is still open. Kaushik P owns it.
+- The contract for the external API access is still pending.
