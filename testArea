@@ -1,22 +1,32 @@
-## Summary
+Standup context for 2026-11-23. Use it with Jira and GitHub for today's plan.
 
-**pain.001.001.11 mapping**
-- `DbtrAgtAcct` is now mapped from the payer bank's account number
-- `InitgPty` uses the payer when the payload names no initiating party (`HeaderRules.initiatingPartyFallback`, default `PAYER`)
-- The field that fills `UETR` is chosen by rule (`IdentifierRules.uetrSource`)
-- `PayloadPreconditions` checks the charge bearer when it is present
-- Golden XML samples refreshed for the above
+Sprint
+- Sprint ends Wednesday 2026-11-25.
+- Every In Progress ticket should be In Review by Wednesday.
+- Anything that will carry over needs a status comment on the ticket.
+- Wednesday's refinement becomes sprint planning.
+- Carry-over from the last sprint was raised as a velocity concern.
 
-**XML to FIS JSON (new package `fis`)**
-- `FisJsonConverter` turns the pain.001.001.11 message into the FIS request JSON in memory, after checking it against the XSD
-- JSON names come from `pain001-v11-fis-names.json`, built from the XSD and the FIS contract by the `generateFisNameTable` task
-- `WirePaymentFisJson` goes from the Base64 payment object to the FIS JSON in one call
-- A failure throws `FisJsonConversionException` with every problem listed; no partial message is returned
-- Output is deterministic: same input, same bytes
-- `build.gradle`: adds `jackson-databind`, `json-schema-validator` (tests only) and the tasks `renderFisJson` and `generateFisNameTable`
+Vasanth
+- Primary: XML to FIS JSON conversion (ENTPMTS-143562). In Progress, target done Tuesday 2026-11-24.
+- Secondary: review Kaushik P's field-level validation (DevExchange page and the sheet).
+- Done: architecture review with Kiran on Friday. The asynchronous design is approved. Build the circuit breaker last, after everything else is wired.
+- Done: acceptance criteria of ENTPMTS-143580 rewritten with Kaushik P, 5 points reduced to 3.
+- Impediments: none.
 
+Kaushik P
+- Primary: ENTPMTS-143580. Table design reviewed with the team, create the two tables (Wire II transactions and circuit breaker), insert a record into each from the AWS console. Target Wednesday.
+- Secondary: address the reviewers' comments (about 10) on the Bank Wire Rail II API approval.
+- Done: field-level validation. DevExchange page updated with field descriptions and examples. Ready for review.
+- Impediment: ENTPMTS-146048. The third-party API onboarding needs a contract agreement, and the security review asked for more changes. Nothing to do on our side but follow up.
 
-- [x] `./gradlew test` passes (122 tests)
-- [x] Golden JSON of all 8 samples validates against the FIS contract
-- [x] FIS's own sample requests convert back to the same JSON
-- [x] `./gradlew renderFisJson` writes the samples to `build/samples/fis-json`
+Tejaswi
+- Primary: Okta and sign-on story (In Progress). Email FIS about the role mapping on their side.
+- Done: spike. Comments added, findings on a branch in the context repo, approved by Cameron. Ready to accept.
+- Findings: the application is registered in Okta as "Open Payment Framework" for both applications, with SAML. OPF is now a long-tail application with a new deadline. The list of IDM roles is in hand.
+- Impediment: FIS may not answer by Wednesday. If not, update the criteria, comment and close.
+- Impediment: Jira does not let the spike move to Accepted.
+
+Team impediments
+- ENTPMTS-146048: escalate to Kiran if it is not cleared by Wednesday.
+- The integration test of ENTPMTS-143580 through the service waits for the service and its API onboarding. It moved out of that story.
